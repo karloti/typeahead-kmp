@@ -1,19 +1,61 @@
-[![official project](http://jb.gg/badges/official.svg)](https://github.com/JetBrains#jetbrains-on-github)
+# Typeahead KMP
 
-# Multiplatform library template
+A high-performance, asynchronous, and lock-free fuzzy search engine for Kotlin Multiplatform (KMP). 
 
-## What is it?
+Unlike standard Levenshtein distance algorithms that penalize length differences, or basic N-gram vectorizers that lose positional context, `typeahead-kmp` uses a **hybrid positional embedding algorithm**. It perfectly simulates human typing behavior by rewarding exact matches, bridging typographical errors (skip-grams), and boosting sequence momentum—all while searching in `O(1)` time per record.
 
-This repository contains a simple library project, intended to demonstrate a [Kotlin Multiplatform](https://kotlinlang.org/docs/multiplatform.html) library that is deployable to [Maven Central](https://central.sonatype.com/).
+## Features
+* ⚡ **Lightning Fast:** Precomputes string embeddings for `O(1)` lookup performance.
+* 🛡️ **Thread-Safe & Lock-Free:** Uses atomic Compare-And-Swap (CAS) operations via `StateFlow` for parallel querying without blocking threads.
+* 🧠 **Human-Typing Aware:** Forgives common typos and emphasizes contiguous sequence matches (momentum).
+* 🌍 **Kotlin Multiplatform:** 100% pure Kotlin. Works on Android, iOS, JVM, Desktop, and Web.
 
-The library has only one function: generate the [Fibonacci sequence](https://en.wikipedia.org/wiki/Fibonacci_sequence) starting from platform-provided numbers. Also, it has a test for each platform just to be sure that tests run.
+## Installation
 
-Note that no other actions or tools usually required for the library development are set up, such as [tracking of backwards compatibility](https://kotlinlang.org/docs/jvm-api-guidelines-backward-compatibility.html#tools-designed-to-enforce-backward-compatibility), explicit API mode, licensing, contribution guideline, code of conduct and others. You can find a guide for best practices for designing Kotlin libraries [here](https://kotlinlang.org/docs/api-guidelines-introduction.html).
+Add the JitPack repository to your root `settings.gradle.kts` or `build.gradle.kts`:
 
-## Guide
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven("[https://jitpack.io](https://jitpack.io)")
+    }
+}
+```
 
-Please find the detailed guide [here](https://www.jetbrains.com/help/kotlin-multiplatform-dev/multiplatform-publish-libraries.html).
+Add the dependency to your module:
 
-# Other resources
-* [Publishing via the Central Portal](https://central.sonatype.org/publish-ea/publish-ea-guide/)
-* [Gradle Maven Publish Plugin \- Publishing to Maven Central](https://vanniktech.github.io/gradle-maven-publish-plugin/central/)
+```kotlin
+dependencies {
+    implementation("io.github.karloti:typeahead-kmp:1.0.0")
+}
+```
+
+## Usage
+
+The TypeaheadSearchEngine uses a suspend factory method to ensure background initialization without blocking the main thread.
+
+```kotlin
+import io.github.karloti.typeahead.TypeaheadSearchEngine
+import kotlinx.coroutines.launch
+
+// 1. Initialize the engine with your data corpus
+val corpus = listOf("Bulgaria", "Bolivia", "Belgium", "Burundi")
+
+coroutineScope.launch {
+    // This distributes the vectorization workload across available CPU cores
+    val searchEngine = TypeaheadSearchEngine(corpus)
+    
+    // 2. Search for a query
+    val results = searchEngine.search("bolgar", maxResults = 10)
+    
+    // Results will contain Pairs of String and their similarity score
+    results.forEach { (text, score) ->
+        println("$text : $score")
+    }
+}
+```
+## License
+This project is licensed under the MIT License.
+
+

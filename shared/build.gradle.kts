@@ -13,11 +13,12 @@ version = "1.0.0"
 kotlin {
     jvm()
     androidLibrary {
-        namespace = "org.jetbrains.kotlinx.multiplatform.library.template"
+        // Променяме namespace-а да отговаря на твоя пакет
+        namespace = "io.github.karloti.typeahead"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
-        withJava() // enable java compilation support
+        withJava()
         withHostTestBuilder {}.configure {}
         withDeviceTestBuilder {
             sourceSetTreeName = "test"
@@ -25,9 +26,7 @@ kotlin {
 
         compilations.configureEach {
             compilerOptions.configure {
-                jvmTarget.set(
-                    JvmTarget.JVM_11
-                )
+                jvmTarget.set(JvmTarget.JVM_11)
             }
         }
     }
@@ -38,7 +37,8 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            //put your multiplatform dependencies here
+            // Тук добавяме корутините, за да са достъпни на всички платформи
+            implementation(libs.kotlinx.coroutines.core)
         }
 
         commonTest.dependencies {
@@ -48,35 +48,35 @@ kotlin {
 }
 
 mavenPublishing {
-    publishToMavenCentral()
+//    publishToMavenCentral()
+//    signAllPublications()
 
-    signAllPublications()
-
-    coordinates(group.toString(), "library", version.toString())
+    // Това определя как ще се импортира библиотеката: io.github.karloti:typeahead-kmp:1.0.0
+    coordinates(group.toString(), "typeahead-kmp", version.toString())
 
     pom {
-        name = "My library"
-        description = "A library."
+        name = "Typeahead KMP"
+        description = "A high-performance, lock-free, asynchronous fuzzy search engine for Kotlin Multiplatform."
         inceptionYear = "2024"
-        url = "https://github.com/kotlin/multiplatform-library-template/"
+        url = "https://github.com/karloti/typeahead-kmp"
         licenses {
             license {
-                name = "XXX"
-                url = "YYY"
-                distribution = "ZZZ"
+                name = "MIT License"
+                url = "https://opensource.org/licenses/MIT"
+                distribution = "repo"
             }
         }
         developers {
             developer {
-                id = "XXX"
-                name = "YYY"
-                url = "ZZZ"
+                id = "karloti"
+                name = "karloti"
+                url = "https://github.com/karloti"
             }
         }
         scm {
-            url = "XXX"
-            connection = "YYY"
-            developerConnection = "ZZZ"
+            url = "https://github.com/karloti/typeahead-kmp"
+            connection = "scm:git:git://github.com/karloti/typeahead-kmp.git"
+            developerConnection = "scm:git:ssh://github.com/karloti/typeahead-kmp.git"
         }
     }
 }
