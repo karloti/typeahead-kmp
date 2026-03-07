@@ -1,4 +1,4 @@
-package io.github.karloti.typeahead
+package com.github.karloti.typeahead
 import kotlinx.coroutines.yield
 import kotlin.collections.iterator
 import kotlin.math.min

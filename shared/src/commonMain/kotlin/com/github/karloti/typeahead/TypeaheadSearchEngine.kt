@@ -1,4 +1,4 @@
-package io.github.karloti.typeahead
+package com.github.karloti.typeahead
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -12,7 +12,7 @@ import kotlinx.coroutines.yield
 /**
  * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.
  * It behaves like a mutable collection, allowing you to add, remove, and find elements.
- * * @param T The type of elements held in this engine.
+ * @param T The type of elements held in this engine.
  * @param textSelector A lambda function that extracts the searchable String from your object [T].
  * @param defaultDispatcher The coroutine dispatcher used for heavy vectorization. Defaults to [Dispatchers.Default].
  */
@@ -20,8 +20,7 @@ class TypeaheadSearchEngine<T>(
     private val textSelector: (T) -> String,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) {
-    // Държим данните в StateFlow. Това гарантира 100% Lock-Free (без блокиране)
-    // четене по време на търсене, дори ако друга нишка добавя елементи в същия момент!
+
     private val _embeddings = MutableStateFlow<Map<T, Map<String, Double>>>(emptyMap())
 
     /**
@@ -43,9 +42,6 @@ class TypeaheadSearchEngine<T>(
                 comparator = compareByDescending { it.second }
             )
 
-            // Взимаме моментното състояние (Snapshot).
-            // Ако друга нишка извика add() или remove(), това търсене няма да гръмне
-            // с ConcurrentModificationException, защото работи върху неизменимо копие!
             val currentMap = _embeddings.value
 
             for ((item, targetVector) in currentMap) {
@@ -68,7 +64,6 @@ class TypeaheadSearchEngine<T>(
         val stringToVectorize = textSelector(item)
         val vector = stringToVectorize.toPositionalEmbedding()
 
-        // Атомарно обновяване на речника (Compare-And-Swap)
         _embeddings.update { currentMap ->
             currentMap + (item to vector)
         }
@@ -79,7 +74,6 @@ class TypeaheadSearchEngine<T>(
      * This distributes the vectorization workload across all available CPU cores!
      */
     suspend fun addAll(items: Iterable<T>) = withContext(defaultDispatcher) {
-        // Векторизираме всичко паралелно, точно както в стария Фабричен метод
         val newEmbeddings = items.map { item ->
             async {
                 val stringToVectorize = textSelector(item)
@@ -117,4 +111,20 @@ class TypeaheadSearchEngine<T>(
      */
     val size: Int
         get() = _embeddings.value.size
+
+    /**
+     * Checks if a specific item is currently indexed in the engine.
+     * Allows using the `in` operator (e.g., `item in searchEngine`).
+     */
+    operator fun contains(item: T): Boolean {
+        return _embeddings.value.containsKey(item)
+    }
+
+    /**
+     * Returns a snapshot list of all items currently in the engine.
+     * Useful for displaying default lists when the search query is empty.
+     */
+    fun getAllItems(): List<T> {
+        return _embeddings.value.keys.toList()
+    }
 }

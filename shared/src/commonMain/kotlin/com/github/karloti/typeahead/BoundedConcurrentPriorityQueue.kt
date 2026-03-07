@@ -1,4 +1,4 @@
-package io.github.karloti.typeahead
+package com.github.karloti.typeahead
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

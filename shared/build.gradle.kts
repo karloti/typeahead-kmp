@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-version = "1.0.0"
+version = "1.0.1"
 
 kotlin {
     jvm()
@@ -59,8 +59,8 @@ mavenPublishing {
         url = "https://github.com/karloti/typeahead-kmp"
         licenses {
             license {
-                name = "MIT License"
-                url = "https://opensource.org/licenses/MIT"
+                name = "Apache License Version 2.0"
+                url = "https://www.apache.org/licenses/LICENSE-2.0"
                 distribution = "repo"
             }
         }

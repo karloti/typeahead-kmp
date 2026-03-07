@@ -1,9 +1,14 @@
-package io.github.karloti.typeahead
+package com.github.karloti.typeahead
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class TypeaheadSearchEngineTest {
 
@@ -59,17 +64,14 @@ class TypeaheadSearchEngineTest {
         val searchEngine = TypeaheadSearchEngine<City>(textSelector = { it.name })
 
         launch {
-            // 2. Добавяме елементите паралелно
             searchEngine.addAll(cities)
 
-            // 3. Търсим. Връща Pair<City, Double>
             val results = searchEngine.find("sof", maxResults = 5)
 
             results.forEach { (city, score) ->
                 println("Found city: ${city.name} with population ${city.population}. Score: $score")
             }
 
-            // Можем да добавяме/махаме в реално време!
             searchEngine.add(City("3", "Varna", 330000))
             searchEngine.remove(cities[1])
         }
@@ -80,20 +82,16 @@ class TypeaheadSearchEngineTest {
         val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
 
         launch {
-            // Add country names to the search engine
             searchEngine.addAll(countries)
 
-            // Perform a search query
             val results = searchEngine.find("bul", maxResults = 3)
             val scores = listOf(383.0, 197.0, 197.0)
 
-            // Print results
             results.forEachIndexed { index, (country, score) ->
                 println("Found country: $country with score: $score")
                 assertEquals(score, scores[index], "Score mismatch for country $country")
             }
 
-            // Verify search engine size
             println("Total indexed countries: ${searchEngine.size}")
         }
     }
@@ -103,11 +101,10 @@ class TypeaheadSearchEngineTest {
         val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
 
         launch {
-            // Add all countries to the search engine
             searchEngine.addAll(countries)
+            searchEngine.remove("Canada")
 
-            // Simulate typing a country name character by character
-            val queryToType = "Sweeden"
+            val queryToType = "Cnada"
 
             for (i in 1..minOf(queryToType.length, 6)) {
                 val partialQuery = queryToType.substring(0, i)
@@ -125,7 +122,77 @@ class TypeaheadSearchEngineTest {
             }
 
             println("\nTyping simulation completed!")
+            assertEquals(searchEngine.find("Cnada")[0].first,"Grenada", "Search engine should have at least one country left after typing simulation." )
         }
     }
 
+    @Test
+    fun testUltimateThreadSafetyAndFuzzySearch() = runTest {
+        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+
+        val baselineItems = (1..50).map { "item-baseline-$it" }
+        val itemsToRemove = (1..500).map { "item-to-remove-$it" }
+
+        searchEngine.addAll(baselineItems + itemsToRemove)
+
+        val writersCount = 100
+        val itemsPerWriter = 100
+
+        println("Starting aggressive multi-threading test...")
+
+        val allJobs = mutableListOf<Job>()
+
+        for (writerIndex in 1..writersCount) {
+            allJobs += launch(Dispatchers.Default) {
+                val start = (writerIndex - 1) * itemsPerWriter + 1
+                val end = writerIndex * itemsPerWriter
+                for (i in start..end) {
+                    searchEngine.add("item-inserted-$i")
+                }
+            }
+        }
+
+        itemsToRemove.chunked(50).forEach { chunk ->
+            allJobs += launch(Dispatchers.Default) {
+                chunk.forEach { searchEngine.remove(it) }
+            }
+        }
+
+        repeat (20) {
+            allJobs += launch(Dispatchers.Default) {
+                searchEngine.find("item", maxResults = 10)
+            }
+        }
+
+        allJobs.shuffle()
+        allJobs.joinAll()
+
+        println("All threads finished. Running exact verification...")
+
+        val expectedSize = 10050
+
+        assertEquals(expectedSize, searchEngine.size, "Engine size must exactly match the mathematical result.")
+
+        baselineItems.forEach { item ->
+            assertTrue(item in searchEngine, "Baseline item $item went missing!")
+        }
+
+        itemsToRemove.forEach { item ->
+            assertFalse(item in searchEngine, "Deleted item $item is still in the engine!")
+        }
+
+        for (i in 1..(writersCount * itemsPerWriter)) {
+            val item = "item-inserted-$i"
+            assertTrue(item in searchEngine, "Inserted item $item went missing!")
+        }
+
+        assertEquals(
+            expectedSize,
+            searchEngine.getAllItems().size,
+            "getAllItems() should return exactly $expectedSize items."
+        )
+
+        println("✅ Ultimate Thread-safety and Accuracy test passed perfectly!")
+    }
 }
+
