@@ -13,7 +13,6 @@ version = "1.0.0"
 kotlin {
     jvm()
     androidLibrary {
-        // Променяме namespace-а да отговаря на твоя пакет
         namespace = "io.github.karloti.typeahead"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
@@ -37,12 +36,12 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            // Тук добавяме корутините, за да са достъпни на всички платформи
             implementation(libs.kotlinx.coroutines.core)
         }
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }
@@ -51,7 +50,6 @@ mavenPublishing {
 //    publishToMavenCentral()
 //    signAllPublications()
 
-    // Това определя как ще се импортира библиотеката: io.github.karloti:typeahead-kmp:1.0.0
     coordinates(group.toString(), "typeahead-kmp", version.toString())
 
     pom {
