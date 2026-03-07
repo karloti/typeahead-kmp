@@ -114,7 +114,7 @@ dependencyResolutionManagement {
 Add the dependency to your module:
 ```kotlin
 dependencies {
-    implementation("io.github.karloti:typeahead-kmp:1.0.0")
+    implementation("io.github.karloti:typeahead-kmp:1.0.1")
 }
 ```
 ## 💻 Usage

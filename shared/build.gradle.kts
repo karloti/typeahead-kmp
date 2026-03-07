@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-version = "1.0.1"
+version = "1.0.2"
 
 kotlin {
     jvm()
@@ -47,8 +47,8 @@ kotlin {
 }
 
 mavenPublishing {
-//    publishToMavenCentral()
-//    signAllPublications()
+    publishToMavenCentral()
+    signAllPublications()
 
     coordinates(group.toString(), "typeahead-kmp", version.toString())
 
