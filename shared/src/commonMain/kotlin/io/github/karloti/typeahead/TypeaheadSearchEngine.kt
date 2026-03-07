@@ -1,4 +1,4 @@
-package com.github.karloti.typeahead
+package io.github.karloti.typeahead
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import kotlin.collections.iterator
 
 /**
  * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.

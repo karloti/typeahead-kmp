@@ -1,5 +1,6 @@
 package com.github.karloti.typeahead
 
+import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll

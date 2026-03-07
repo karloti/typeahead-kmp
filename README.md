@@ -114,14 +114,14 @@ dependencyResolutionManagement {
 Add the dependency to your module:
 ```kotlin
 dependencies {
-    implementation("com.github.karloti:typeahead-kmp:1.0.0")
+    implementation("io.github.karloti:typeahead-kmp:1.0.0")
 }
 ```
 ## 💻 Usage
 The library behaves like an asynchronous, thread-safe, mutable collection.
 
 ```kotlin
-import com.github.karloti.typeahead.TypeaheadSearchEngine
+import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.launch
 
 // 1. Define your complex domain model
