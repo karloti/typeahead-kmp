@@ -1,3 +1,5 @@
+import org.gradle.plugins.signing.SigningExtension
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.vanniktech.mavenPublish)
@@ -51,5 +53,16 @@ mavenPublishing {
             connection = "scm:git:git://github.com/karloti/typeahead-kmp.git"
             developerConnection = "scm:git:ssh://github.com/karloti/typeahead-kmp.git"
         }
+    }
+}
+
+extensions.configure<SigningExtension> {
+    val keyId = findProperty("signing.keyId")?.toString()
+    val secretKey = findProperty("signing.secretKey")?.toString()
+    val password = findProperty("signing.password")?.toString()
+    
+    if (!keyId.isNullOrEmpty() && !secretKey.isNullOrEmpty() && !password.isNullOrEmpty()) {
+        useInMemoryPgpKeys(keyId, secretKey, password)
+        sign(publishing.publications)
     }
 }
