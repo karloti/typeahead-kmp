@@ -17,6 +17,9 @@ jobs:
           distribution: 'zulu'
           java-version: 21
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Extract version from tag
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
@@ -28,8 +31,22 @@ jobs:
             -Pversion=${{ steps.get_version.outputs.VERSION }} \
             --no-configuration-cache
         env:
+          ORG_GRADLE_PROJECT: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY_CONTENTS }}
+
+      - name: Update version in README.md
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          sed -i "s/implementation(\"io.github.karloti:typeahead-kmp:[^\"]*\")/implementation(\"io.github.karloti:typeahead-kmp:$VERSION\")/g" README.md
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md
+          git commit -m "Update version in README.md to ${{ steps.get_version.outputs.VERSION }} [skip ci]" || echo "No changes to commit"
+          git push
