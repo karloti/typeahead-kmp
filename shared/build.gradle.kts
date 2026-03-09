@@ -8,7 +8,8 @@ plugins {
 }
 
 group = "io.github.karloti"
-version = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
+val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
+version = projectVersion
 
 kotlin {
     jvm()
@@ -50,7 +51,7 @@ mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
 
-    coordinates(group.toString(), "typeahead-kmp", version.toString())
+    coordinates(group.toString(), "typeahead-kmp", projectVersion)
 
     pom {
         name = "Typeahead KMP"

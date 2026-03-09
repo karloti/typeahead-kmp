@@ -3,6 +3,9 @@ on:
   release:
     types: [released] # Стартира само когато натиснеш "Publish Release"
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     name: Release build and publish
@@ -41,7 +44,10 @@ jobs:
       - name: Update version in README.md
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
-          sed -i "s/implementation(\"io.github.karloti:typeahead-kmp:[^\"]*\")/implementation(\"io.github.karloti:typeahead-kmp:$VERSION\")/g" README.md
+          echo "Updating README.md to version $VERSION"
+          # Използваме по-сигурен разделител и добавяме проверка
+          sed -i "s|implementation(\"io.github.karloti:typeahead-kmp:[^\"]*\")|implementation(\"io.github.karloti:typeahead-kmp:$VERSION\")|g" README.md
+          grep "typeahead-kmp:$VERSION" README.md
 
       - name: Commit and push changes
         run: |
