@@ -17,6 +17,12 @@ jobs:
     name: Release build and publish
     runs-on: macOS-latest
     environment: release
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+      ORG_GRADLE_PROJECT_signing.keyId: ${{ secrets.SIGNING_KEY_ID }}
+      ORG_GRADLE_PROJECT_signing.password: ${{ secrets.SIGNING_PASSWORD }}
+      ORG_GRADLE_PROJECT_signing.secretKey: ${{ secrets.GPG_KEY_CONTENTS }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -42,12 +48,6 @@ jobs:
           ./gradlew publishToMavenCentral \
             -Pversion=${{ steps.get_version.outputs.VERSION }} \
             --no-configuration-cache
-        env:
-          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-          ORG_GRADLE_PROJECT_signing.keyId: ${{ secrets.SIGNING_KEY_ID }}
-          ORG_GRADLE_PROJECT_signing.password: ${{ secrets.SIGNING_PASSWORD }}
-          ORG_GRADLE_PROJECT_signing.secretKey: ${{ secrets.GPG_KEY_CONTENTS }}
 
       - name: Update version in README.md
         run: |
