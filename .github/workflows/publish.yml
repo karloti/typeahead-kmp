@@ -3,6 +3,7 @@ on:
   release:
     types: [released] # Стартира само когато натиснеш "Publish Release"
 
+
 permissions:
   contents: write
 
