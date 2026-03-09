@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-version = "1.0.2"
+version = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
 
 kotlin {
     jvm()
