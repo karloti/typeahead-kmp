@@ -53,11 +53,6 @@ mavenPublishing {
 
     coordinates(group.toString(), "typeahead-kmp", projectVersion)
 
-    // Принудително използване на In-Memory PGP ключове, ако са налични
-    project.findProperty("signing.secretKey")?.let {
-        signAllPublications()
-    }
-
     pom {
         name = "Typeahead KMP"
         description = "A high-performance, lock-free, asynchronous fuzzy search engine for Kotlin Multiplatform."

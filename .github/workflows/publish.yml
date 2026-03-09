@@ -9,7 +9,11 @@ permissions:
   contents: write
 
 jobs:
+  build:
+    uses: ./.github/workflows/gradle.yml
+
   publish:
+    needs: build
     name: Release build and publish
     runs-on: macOS-latest
     environment: release
