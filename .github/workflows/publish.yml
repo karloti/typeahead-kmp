@@ -38,6 +38,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_KEY_CONTENTS }}" | base64 --decode | gpg --batch --import --no-tty
+          echo "${{ secrets.SIGNING_PASSWORD }}" | gpg --batch --pinentry-mode loopback --import-ownertrust <(gpg --list-secret-keys --with-colons | grep fpr | cut -d: -f10 | xargs -I {} echo '{}:6:')
+
       - name: Extract version from tag
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
@@ -47,7 +52,11 @@ jobs:
         run: |
           ./gradlew publishToMavenCentral \
             -Pversion=${{ steps.get_version.outputs.VERSION }} \
+            -Psigning.gnupg.executable=gpg \
+            -Psigning.gnupg.useLegacyGpg=true \
             --no-configuration-cache
+        env:
+          ORG_GRADLE_PROJECT_signing.gnupg.passphrase: ${{ secrets.SIGNING_PASSWORD }}
 
       - name: Update version in README.md
         run: |

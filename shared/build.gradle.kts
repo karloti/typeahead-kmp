@@ -57,12 +57,6 @@ mavenPublishing {
 }
 
 extensions.configure<SigningExtension> {
-    val keyId = findProperty("signing.keyId")?.toString()
-    val secretKey = findProperty("signing.secretKey")?.toString()
-    val password = findProperty("signing.password")?.toString()
-    
-    if (!keyId.isNullOrEmpty() && !secretKey.isNullOrEmpty() && !password.isNullOrEmpty()) {
-        useInMemoryPgpKeys(keyId, secretKey, password)
-        sign(publishing.publications)
-    }
+    useGpgCmd()
+    sign(publishing.publications)
 }
