@@ -32,9 +32,5 @@ jobs:
         distribution: 'zulu'
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
-      with:
-        build-scan-publish: true
-        build-scan-terms-of-service-url: "https://gradle.com/terms-of-service"
-        build-scan-terms-of-service-agree: "yes"
     - name: Build with Gradle
-      run: ./gradlew :shared:allTests --scan
+      run: ./gradlew :shared:allTests --scan -Dscan.termsOfServiceUrl="https://gradle.com/terms-of-service" -Dscan.termsOfServiceAgree=yes
