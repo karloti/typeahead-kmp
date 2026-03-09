@@ -1,8 +1,5 @@
 [versions]
-agp = "8.13.2"
 kotlin = "2.3.10"
-android-minSdk = "24"
-android-compileSdk = "36"
 vanniktechMavenPublish = "0.36.0"
 coroutines = "1.10.2"
 
@@ -12,6 +9,5 @@ kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-c
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 
 [plugins]
-android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }
