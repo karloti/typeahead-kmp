@@ -14,6 +14,9 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -46,9 +49,15 @@ jobs:
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           echo "Updating README.md to version $VERSION"
-          # Използваме по-сигурен разделител и добавяме проверка
+          # Търсим и заменяме точно реда с депендънсито
           sed -i "s|implementation(\"io.github.karloti:typeahead-kmp:[^\"]*\")|implementation(\"io.github.karloti:typeahead-kmp:$VERSION\")|g" README.md
-          grep "typeahead-kmp:$VERSION" README.md
+          # Проверка дали файлът е променен
+          if grep -q "typeahead-kmp:$VERSION" README.md; then
+            echo "Successfully updated README.md to $VERSION"
+          else
+            echo "Failed to update README.md"
+            exit 1
+          fi
 
       - name: Commit and push changes
         run: |
