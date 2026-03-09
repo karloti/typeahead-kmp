@@ -33,4 +33,4 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
     - name: Build with Gradle
-      run: ./gradlew :shared:commonTest --scan -Dscan.termsOfServiceUrl="https://gradle.com/terms-of-service" -Dscan.termsOfServiceAgree=yes
+      run: ./gradlew :shared:commonTest --info --stacktrace --scan -Dscan.termsOfServiceUrl="https://gradle.com/terms-of-service" -Dscan.termsOfServiceAgree=yes
