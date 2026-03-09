@@ -49,20 +49,27 @@ jobs:
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           echo "Updating README.md to version $VERSION"
-          # Търсим и заменяме точно реда с депендънсито
+          # Търсим и заменяме точно реда с депендънсито, позволявайки всякакви интервали
           sed -i "s|implementation(\"io.github.karloti:typeahead-kmp:[^\"]*\")|implementation(\"io.github.karloti:typeahead-kmp:$VERSION\")|g" README.md
-          # Проверка дали файлът е променен
+          
+          # Проверка за специфични интервали, които понякога се появяват при копиране
+          if ! grep -q "typeahead-kmp:$VERSION" README.md; then
+             echo "Trying loose match..."
+             sed -i "s|io.github.karloti:typeahead-kmp:[0-9.]*|io.github.karloti:typeahead-kmp:$VERSION|g" README.md
+          fi
+
           if grep -q "typeahead-kmp:$VERSION" README.md; then
             echo "Successfully updated README.md to $VERSION"
           else
-            echo "Failed to update README.md"
+            echo "CRITICAL: Could not find or update version in README.md"
             exit 1
           fi
 
       - name: Commit and push changes
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           git add README.md
-          git commit -m "Update version in README.md to ${{ steps.get_version.outputs.VERSION }} [skip ci]" || echo "No changes to commit"
-          git push
+          git commit -m "docs: update version in README to ${{ steps.get_version.outputs.VERSION }} [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push origin main
