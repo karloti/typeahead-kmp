@@ -67,7 +67,7 @@ dependencies {
 }
 ```
 
-### ⌨️ Real-World Typing Simulation: The "Cnada" Problem
+## ⌨️ Real-World Typing Simulation: The "Cnada" Problem
 
 To truly understand the power of `typeahead-kmp`, let's look at a real-time keystroke simulation.
 Imagine a user is trying to type **"Canada"**, but they accidentally type **"Cnada"** (a classic transposition error).
@@ -75,7 +75,8 @@ Imagine a user is trying to type **"Canada"**, but they accidentally type **"Cna
 Here is how the engine's internal mathematical weighting dynamically reacts at each keystroke in `O(1)` time:
 
 ### Step 1: Initial Input (L2 Normalization & Short-Word Bias)
-At this stage, the user has only typed one or two letters. The `P0` (First Letter) anchor heavily restricts the search space. Because the input is extremely short, **L2 Normalization** naturally favors shorter words (Short-Word Bias) until sequence momentum builds up. This brings shorter countries to the top.
+At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) anchor heavily restricts the search space. Because the input is extremely short, **L2 Normalization** naturally favors shorter words (Short-Word Bias). This brings 4-letter countries like `Cuba` and `Chad` to the top. By the second keystroke, `Canada` barely enters the top 5.
+
 ```kotlin
 === Typing: 'C' with typing error of 'Cnada' ===
 1. Cuba - Score: 0.19181583900475285
@@ -87,44 +88,47 @@ At this stage, the user has only typed one or two letters. The `P0` (First Lette
 === Typing: 'Cn' with typing error of 'Cnada' ===
 1. Cuba - Score: 0.10297213760008117
 2. Chad - Score: 0.10297213760008117
-3. China - Score: 0.07932206530505409
-4. Chile - Score: 0.07932206530505409
-5. Cyprus - Score: 0.0634067018547109
+...
+5. Canada - Score: 0.07255630308706752
 ```
 
-### Step 2: Transposition Error (Fuzzy Prefix)
-The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop the targeted results immediately. Our **Fuzzy Prefix** dynamically anchors the first letter ( `C` ) and sorts the remaining characters, keeping the search momentum alive.
+### Step 2: Transposition Recovery (Fuzzy Prefix)
+The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Canada" entirely at this exact moment. Our **Fuzzy Prefix** dynamically anchors the first letter (`C`) and alphabetically sorts the remaining characters (`a`, `n`). Both the input `Cna` and the target `Can` generate the exact same spatial feature (`FPR_c_an`). `Canada` instantly rockets to the #1 spot!
+
 ```kotlin
 === Typing: 'Cna' with typing error of 'Cnada' ===
-1. Chad - Score: 0.08281542504942256
-2. Cuba - Score: 0.07409801188632545
-3. China - Score: 0.06757216102651037
-4. Chile - Score: 0.05707958943854292
-5. Cyprus - Score: 0.04562700801599519
+1. Canada - Score: 0.14257617990546595 <-- Rockets to #1 via Fuzzy Prefix intersection!
+2. Chad - Score: 0.08281542504942256
+3. Cuba - Score: 0.07409801188632545
+4. China - Score: 0.06757216102651037
+5. Chile - Score: 0.05707958943854292
 ```
 
 ### Step 3: Spellchecker Takeover (Typoglycemia Gestalt)
-The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Spellchecker Mode" via the **Typoglycemia Gestalt Anchor**. It detects a 4-letter word starting with `C` and ending with `d`. The algorithm brilliantly assumes the user is actually searching for `Chad` and applies a massive spatial intersection multiplier!
+The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Spellchecker Mode" via the **Typoglycemia Gestalt Anchor**. It detects a 4-letter word starting with `C` and ending with `d`. The algorithm mathematically assumes the user is actively trying to spell `Chad` and applies a massive 15.0 spatial intersection multiplier to that specific vector, temporarily overtaking `Canada`.
+
 ```kotlin
 === Typing: 'Cnad' with typing error of 'Cnada' ===
 1. Chad - Score: 0.1853988462303561 <-- Massive spike due to Gestalt anchor (C...d)!
-2. Cuba - Score: 0.07957032027053908
-3. China - Score: 0.04934251382749997
-4. Chile - Score: 0.04168063279838507
-5. Cyprus - Score: 0.0333177338083568
+2. Canada - Score: 0.1278792484954006
+3. Cuba - Score: 0.07957032027053908
+4. China - Score: 0.04934251382749997
+5. Chile - Score: 0.04168063279838507
 ```
 
-### Step 4: Recovery & Recalculation (Skip-Grams & N-Grams)
-When the final `a` is typed (length 5), the Gestalt anchor for `Chad` (length 4) completely breaks. The engine reverts to deep structural analysis. Overlapping Skip-Grams bridge the transposed letters (`C-n-a-d-a`), but something else amazing happens: `China` (which is exactly 5 letters long, starts with `C`, and ends with `a`) now perfectly triggers the new Typoglycemia Gestalt anchor (`GESTALT_c_5_a`). The engine instantly adapts to the new structure and propels `China` to the top!
+### Step 4: Final Resolution (Skip-Grams & N-Grams)
+The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) completely breaks. The engine reverts to deep structural analysis. Overlapping Skip-Grams seamlessly bridge the transposed letters (`C-n-a-d-a`). This structural skeleton perfectly aligns with the core features of `Canada`, accumulating a massive dot-product score that completely overcomes the length penalty. `Canada` firmly reclaims the #1 spot!
+
 ```kotlin
 === Typing: 'Cnada' with typing error of 'Cnada' ===
-1. China - Score: 0.10623856459894943 <-- Takes the lead via new Gestalt anchor & structural match!
-2. Chad - Score: 0.05424611768613351
-3. Grenada - Score: 0.04955129623022677
-4. Chile - Score: 0.047217139821755294
-5. Cuba - Score: 0.04168063279838507
+1. Canada - Score: 0.2563201621199545 <-- Reclaims the lead via deep structural sequence momentum!
+2. China - Score: 0.10623856459894943
+3. Chad - Score: 0.05424611768613351
+4. Grenada - Score: 0.04955129623022677
+5. Chile - Score: 0.047217139821755294
 ```
-**This dynamic shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all happening in `O(1)` time—is what makes `typeahead-kmp` uniquely powerful for human-driven inputs.**
+
+**This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all happening in `O(1)` time without memory allocations—is what makes `typeahead-kmp` uniquely powerful for human-driven inputs.**
 
 ## 💻 Usage
 The library behaves like an asynchronous, thread-safe, mutable collection.
