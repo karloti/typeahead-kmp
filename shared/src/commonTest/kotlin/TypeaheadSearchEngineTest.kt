@@ -13,17 +13,6 @@ import kotlin.test.assertTrue
 
 class TypeaheadSearchEngineTest {
 
-    data class City(
-        val id: String,
-        val name: String,
-        val population: Int
-    )
-
-    val cities = listOf(
-        City("1", "Sofia", 1200000),
-        City("2", "Plovdiv", 340000)
-    )
-
     val countries = listOf(
         "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda",
         "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan", "Bahamas",
@@ -61,37 +50,19 @@ class TypeaheadSearchEngineTest {
     )
 
     @Test
-    fun testTypeaheadSearchFunctionality() = runTest {
-        val searchEngine = TypeaheadSearchEngine<City>(textSelector = { it.name })
-
-        launch {
-            searchEngine.addAll(cities)
-
-            val results = searchEngine.find("sof", maxResults = 5)
-
-            results.forEach { (city, score) ->
-                println("Found city: ${city.name} with population ${city.population}. Score: $score")
-            }
-
-            searchEngine.add(City("3", "Varna", 330000))
-            searchEngine.remove(cities[1])
-        }
-    }
-
-    @Test
     fun testAddingCountriesAndSearching() = runTest {
         val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
 
         launch {
             searchEngine.addAll(countries)
 
-            val results = searchEngine.find("bul", maxResults = 3)
-            val scores = listOf(383.0, 197.0, 197.0)
-
-            results.forEachIndexed { index, (country, score) ->
+            val results = searchEngine.find("bul", maxResults = 5)
+            val checkResult = listOf("Bulgaria", "Burundi", "Burkina Faso", "Benin", "Brunei")
+            results.forEach { (country, score) ->
                 println("Found country: $country with score: $score")
-                assertEquals(score, scores[index], "Score mismatch for country $country")
             }
+
+            assertEquals(checkResult, results.map { it.first }, "Results should match the expected results.")
 
             println("Total indexed countries: ${searchEngine.size}")
         }
@@ -100,7 +71,13 @@ class TypeaheadSearchEngineTest {
     @Test
     fun testTypingSimulationWithScoreProgression() = runTest {
         val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
-
+        val checkResult = listOf(
+            listOf("Cuba", "Chad", "China", "Chile", "Cyprus"),
+            listOf("Cuba", "Chad", "China", "Chile", "Cyprus"),
+            listOf("Chad", "Cuba", "China", "Chile", "Cyprus"),
+            listOf("Chad", "Cuba", "China", "Chile", "Cyprus"),
+            listOf("China", "Chad", "Grenada", "Chile", "Cuba"),
+        )
         launch {
             searchEngine.addAll(countries)
             searchEngine.remove("Canada")
@@ -120,10 +97,13 @@ class TypeaheadSearchEngineTest {
                         println("${index + 1}. $country - Score: $score")
                     }
                 }
+                assertEquals(
+                    checkResult[i - 1],
+                    results.map { it.first },
+                    "Results for query '$partialQuery' should match the expected results."
+                )
             }
-
             println("\nTyping simulation completed!")
-            assertEquals(searchEngine.find("Cnada")[0].first,"Grenada", "Search engine should have at least one country left after typing simulation." )
         }
     }
 
@@ -159,7 +139,7 @@ class TypeaheadSearchEngineTest {
             }
         }
 
-        repeat (20) {
+        repeat(20) {
             allJobs += launch(Dispatchers.Default) {
                 searchEngine.find("item", maxResults = 10)
             }
@@ -195,5 +175,64 @@ class TypeaheadSearchEngineTest {
 
         println("✅ Ultimate Thread-safety and Accuracy test passed perfectly!")
     }
-}
 
+    @Test
+    fun testExportAndImportSequence() = runTest {
+        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+
+        launch {
+            // 1. Load initial data and compute embeddings
+            searchEngine.addAll(countries)
+            val originalSize = searchEngine.size
+            assertEquals(countries.size, originalSize, "Engine size should match the number of countries.")
+
+            // 2. Perform a baseline search to record expected scores
+            val query = "can"
+            val expectResults = listOf("Canada", "Cambodia", "Cameroon", "Cabo Verde", "Chad")
+            val actualResults = searchEngine.find(query, maxResults = 5)
+            assertEquals(expectResults, actualResults.map { it.first }, "Baseline search results must match.")
+
+            // 3. Export the state
+            // We use .toList() to materialize the sequence into memory for testing purposes,
+            // so we don't lose the data when we clear the engine.
+            val exportedRecords = searchEngine.exportAsSequence().toList()
+            assertEquals(originalSize, exportedRecords.size, "Exported sequence size must match engine size.")
+
+            // 4. Clear the engine
+            searchEngine.clear()
+            assertEquals(0, searchEngine.size, "Engine should be empty after clear().")
+            assertTrue(searchEngine.find(query).isEmpty(), "Search should return nothing after clearing.")
+
+            // 5. Import the state back from the materialized sequence
+            searchEngine.importFromSequence(exportedRecords.asSequence())
+            assertEquals(originalSize, searchEngine.size, "Engine size must be fully restored after import.")
+
+            // 6. Perform the exact same search and verify mathematical integrity
+            val restoredResults = searchEngine.find(query, maxResults = 5)
+            assertEquals(actualResults, restoredResults, "Restored results must match.")
+
+            // Verify that not only the items match, but their floating-point scores match perfectly
+            actualResults.forEachIndexed { index, expectedPair ->
+                val actualPair = restoredResults[index]
+                assertEquals(expectedPair.first, actualPair.first, "Item at index $index must match.")
+                assertEquals(
+                    expectedPair.second,
+                    actualPair.second,
+                    "Mathematical score at index $index must be identical."
+                )
+            }
+
+            // 7. Test merging functionality (clearExisting = false)
+            val extraCountryRecord = io.github.karloti.typeahead.TypeaheadRecord(
+                item = "Atlantis",
+                vector = mapOf("P0_a" to 10.0, "LEN_8" to 8.0) // Mock vector
+            )
+            searchEngine.importFromSequence(sequenceOf(extraCountryRecord), clearExisting = false)
+
+            assertEquals(originalSize + 1, searchEngine.size, "Engine size should increase by 1 after merging.")
+            assertTrue("Atlantis" in searchEngine, "The merged item 'Atlantis' should be present in the engine.")
+
+            println("✅ Export/Import sequence and vector integrity test passed perfectly!")
+        }
+    }
+}

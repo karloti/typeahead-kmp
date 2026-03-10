@@ -1,70 +1,89 @@
 package io.github.karloti.typeahead
+
 import kotlinx.coroutines.yield
-import kotlin.collections.iterator
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
- * Generates a hybrid positional N-gram embedding from the given string.
- * This embedding captures exact positional matches, skip-grams (to bridge typographical errors),
- * and floating N-grams (to reward sequence momentum).
+ * Generates an L2-normalized hybrid positional N-gram embedding from the given string.
+ * This advanced embedding handles typeahead (prefix matching) and fuzzy spellchecking
+ * (transpositions, insertions, deletions) within a unified sparse vector space.
  *
- * @param maxNgramSize The maximum length of the floating N-grams. Default is 5.
- * @return A sparse vector represented as a Map where the key is the N-gram feature and the value is its weight.
+ * @param maxNgramSize The maximum length of the floating N-grams. Default is 4.
+ * @return A sparse vector represented as a Map where the key is the feature and the value is its L2-normalized weight.
  */
-suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 5): Map<String, Double> {
+suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 4): Map<String, Double> {
     val vector = mutableMapOf<String, Double>()
     val word = this.lowercase()
     val length = word.length
 
     if (length == 0) return vector
 
-    // 1. Absolute Positional Anchors
-    for (i in 0 until min(length, 8)) {
-        val anchorKey = "P${i}_${word[i]}"
-        vector[anchorKey] = 10.0 - i
+    // 1. P0 Anchor (Absolute foundation)
+    // The first letter is highly reliable in typeahead scenarios.
+    vector["P0_${word[0]}"] = 10.0
+
+    // 2. Length Bucket (Length synchronizer)
+    // Elevates words with the exact same length during typographical errors.
+    vector["LEN_$length"] = 8.0
+
+    // 3. Typoglycemia Gestalt Anchor
+    // Captures perfectly 1-character typos where the length, first, and last characters match.
+    if (length > 1) {
+        vector["GESTALT_${word[0]}_${length}_${word.last()}"] = 15.0
+    }
+
+    // 4. Strict & Fuzzy Prefixes (The core of Typeahead)
+    for (i in 1..min(length, 8)) {
+        val prefix = word.substring(0, i)
+
+        // Strict Prefix: Rewards perfect typing sequence.
+        vector["PR_$prefix"] = i * 6.0
+
+        if (i >= 2) {
+            // Fuzzy Prefix: Mitigates transpositions (e.g., "Cna" vs "Canada").
+            // Anchors the first character and sorts the remainder of the prefix.
+            val sortedRest = prefix.substring(1).toCharArray().apply { sort() }.joinToString("")
+            vector["FPR_${word[0]}_$sortedRest"] = i * 5.0
+        }
         yield()
     }
 
-    // 2. Skip-Grams (1-Gap Patterns)
+    // 5. Skip-Grams (Bridge for deletions and insertions)
     for (i in 0 until length - 2) {
-        val skipKey = "S_${word[i]}_${word[i + 2]}"
-        vector[skipKey] = (vector[skipKey] ?: 0.0) + 5.0
-        yield()
+        val skipKey = "${word[i]}${word[i + 2]}"
+        vector[skipKey] = (vector[skipKey] ?: 0.0) + 4.0
     }
 
-    // 3. Floating N-Grams (Sequence Momentum)
+    // 6. Floating N-Grams (The structural skeleton)
     for (i in 0 until length) {
         for (n in 2..maxNgramSize) {
             if (i + n <= length) {
                 val ngram = word.substring(i, i + n)
-                val weight = (n * n).toDouble()
+                // Linear progression for weights avoids complex branching operations.
+                val weight = n * 2.5
                 vector[ngram] = (vector[ngram] ?: 0.0) + weight
             }
         }
         yield()
     }
 
-    return vector
-}
-
-/**
- * Computes the dot product of two sparse vectors.
- * This is highly optimized by iterating only over the smaller vector.
- *
- * @param other The target vector to compare against.
- * @return The calculated similarity score. Higher means more similar.
- */
-suspend infix fun Map<String, Double>.dotProduct(other: Map<String, Double>): Double {
-    var score = 0.0
-    val (smaller, larger) = if (this.size < other.size) this to other else other to this
-
-    for ((key, weight1) in smaller) {
-        val weight2 = larger[key]
-        if (weight2 != null) {
-            score += weight1 * weight2
-        }
-        yield()
+    // --- L2 Normalization ---
+    // Mathematically balances the vector, implicitly penalizing length disparities
+    // unless compensated by substantial feature intersections.
+    var sumOfSquares = 0.0
+    for (weight in vector.values) {
+        sumOfSquares += weight * weight
     }
 
-    return score
+    val magnitude = sqrt(sumOfSquares)
+
+    if (magnitude == 0.0) return emptyMap()
+
+    val normalizedVector = mutableMapOf<String, Double>()
+    for ((key, weight) in vector) {
+        normalizedVector[key] = weight / magnitude
+    }
+
+    return normalizedVector
 }

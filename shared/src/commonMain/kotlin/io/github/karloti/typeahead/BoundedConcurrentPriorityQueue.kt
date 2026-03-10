@@ -10,6 +10,8 @@ import kotlin.math.min
  * A lock-free, thread-safe bounded priority queue optimized for Kotlin Multiplatform.
  * It utilizes atomic Compare-And-Swap (CAS) operations via [MutableStateFlow]
  * to maintain high performance across multiple concurrent writers and readers.
+ * * This data structure is specifically designed to efficiently maintain a "Top-K"
+ * list of search results during heavy concurrent evaluations.
  *
  * @param T The type of elements held in this queue.
  * @param maxSize The maximum number of elements the queue can hold.
@@ -23,19 +25,21 @@ class BoundedConcurrentPriorityQueue<T>(
 
     /**
      * A reactive stream of the current items in the queue.
-     * Can be observed directly by UI components.
+     * Can be observed directly by UI components for real-time updates.
      */
     val items: StateFlow<List<T>> = _items.asStateFlow()
 
     /**
      * Attempts to add an item to the bounded queue.
-     * If the queue is at capacity and the item is evaluated as having lower priority
-     * than the lowest item currently in the queue, it is immediately discarded.
+     * If the queue is at capacity and the item is evaluated as having a lower priority
+     * than the lowest item currently in the queue, it is immediately discarded to prevent
+     * unnecessary memory allocations.
      *
      * @param item The element to add.
      */
     fun add(item: T) {
         _items.update { currentList ->
+            // Fast path: discard if queue is full and item is worse than the last one
             if (currentList.size >= maxSize && comparator.compare(item, currentList.last()) > 0) {
                 return@update currentList
             }

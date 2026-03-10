@@ -2,11 +2,13 @@ import org.gradle.plugins.signing.SigningExtension
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.kotlinSerialization)
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
 group = "io.github.karloti"
-val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
+val projectVersion = "1.2.0"
+//val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
 version = projectVersion
 
 kotlin {
@@ -14,6 +16,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
         }
 
         commonTest.dependencies {
