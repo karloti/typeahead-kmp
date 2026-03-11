@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.2.2"
+val projectVersion = "1.2.3"
 //val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
 version = projectVersion
 
@@ -87,7 +87,8 @@ mavenPublishing {
     }
 }
 
+/*
 extensions.configure<SigningExtension> {
     useGpgCmd()
     sign(publishing.publications)
-}
+}*/
