@@ -1,3 +1,4 @@
+![Typeahead KMP Preview](assets/typeahead.png)
 # Typeahead KMP 🚀
 
 A high-performance, asynchronous, and lock-free in-memory fuzzy search engine for Kotlin Multiplatform (KMP).
@@ -200,6 +201,11 @@ Found country: 'Burundi' with score: 0.11166355040347513
 Found country: 'Burkina Faso' with score: 0.09122675301352591
 Total indexed countries: 194
 ```
+
+## 🚀 Tracking & Roadmap
+We use YouTrack for task management and issue tracking.
+You can view the current tasks and progress here:
+[Typeahead KMP Issues & Roadmap](https://smartcoding.youtrack.cloud/projects/typeahead_kmp)
 
 ## 📄 License
 This project is licensed under the **Apache License Version 2.0** - see the LICENSE file for details.
