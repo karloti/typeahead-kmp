@@ -208,4 +208,4 @@ You can view the current tasks and progress here:
 [Typeahead KMP Issues & Roadmap](https://smartcoding.youtrack.cloud/projects/typeahead_kmp)
 
 ## 📄 License
-This project is licensed under the **Apache License Version 2.0** - see the LICENSE file for details.
+This project is licensed under the **Apache License Version 2.0** - see the [LICENSE](LICENSE) file for details.
