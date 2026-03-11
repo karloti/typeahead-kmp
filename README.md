@@ -64,7 +64,7 @@ Add the dependency to your module:
 
 ```kotlin
 dependencies {
-    implementation("io.github.karloti:typeahead-kmp:1.2.3") // replace with latest version
+    implementation("io.github.karloti:typeahead-kmp:1.2.4") // replace with latest version
 }
 ```
 

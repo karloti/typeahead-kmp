@@ -1,6 +1,9 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
 import com.android.build.api.dsl.androidLibrary
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.gradle.plugins.signing.SigningExtension
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -10,7 +13,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.2.3"
+val projectVersion = "1.2.5"
 //val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
 version = projectVersion
 
@@ -39,6 +42,32 @@ kotlin {
     iosArm64()
     iosSimulatorArm64()
     linuxX64()
+    js {
+        browser(){
+            testTask {
+                useMocha {
+                    timeout = "60000"
+                }
+            }
+        }
+//        nodejs {
+//            testTask {
+//                useMocha {
+//                    timeout = "30000"
+//                }
+//            }
+//        }
+    }
+
+    wasmJs {
+        browser {
+            testTask {
+                useMocha {
+                    timeout = "60000"
+                }
+            }
+        }
+    }
 
     sourceSets {
         commonMain.dependencies {
