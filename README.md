@@ -131,6 +131,8 @@ The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) comp
 
 **This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all happening in `O(1)` time without memory allocations—is what makes `typeahead-kmp` uniquely powerful for human-driven inputs.**
 
+![Real-World Typing Simulation: The "Cnada" Problem](assets/cnada.gif)
+
 ## 💻 Usage
 The library behaves like an asynchronous, thread-safe, mutable collection.
 
