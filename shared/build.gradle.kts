@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 Kaloyan Karaivanov
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 @file:OptIn(ExperimentalWasmDsl::class)
 
 import com.android.build.api.dsl.androidLibrary
@@ -13,7 +29,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.2.6"
+val projectVersion = "1.2.7"
 //val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
 version = projectVersion
 
@@ -92,7 +108,7 @@ mavenPublishing {
     pom {
         name = "Typeahead KMP"
         description = "A high-performance, lock-free, asynchronous fuzzy search engine for Kotlin Multiplatform."
-        inceptionYear = "2024"
+        inceptionYear = "2026"
         url = "https://github.com/karloti/typeahead-kmp"
         licenses {
             license {
@@ -104,7 +120,7 @@ mavenPublishing {
         developers {
             developer {
                 id = "karloti"
-                name = "karloti"
+                name = "Kaloyan Karaivanov"
                 url = "https://github.com/karloti"
             }
         }
