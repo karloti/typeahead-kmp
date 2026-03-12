@@ -52,11 +52,9 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testAddingCountriesAndSearching() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+        val searchEngine = TypeaheadSearchEngine(countries)
 
         launch {
-            searchEngine.addAll(countries)
-
             val results = searchEngine.find("bul", maxResults = 5)
             val checkResult = listOf("Bulgaria", "Burundi", "Burkina Faso", "Benin", "Brunei")
             results.forEach { (country, score) ->
@@ -71,7 +69,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testTypingSimulationWithScoreProgression() = runTest(timeout = 1.minutes){
-        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+        val searchEngine = TypeaheadSearchEngine<String>()
         val checkResult = listOf(
             listOf("Cuba", "Chad", "China", "Chile", "Cyprus"),
             listOf("Cuba", "Chad", "China", "Chile", "Cyprus"),
@@ -110,7 +108,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testUltimateThreadSafetyAndFuzzySearch() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+        val searchEngine = TypeaheadSearchEngine<String> { it }
 
         val baselineItems = (1..50).map { "item-baseline-$it" }
         val itemsToRemove = (1..500).map { "item-to-remove-$it" }
@@ -183,7 +181,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testExportAndImportSequence() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+        val searchEngine = TypeaheadSearchEngine<String> { it }
 
         launch {
             // 1. Load initial data and compute embeddings

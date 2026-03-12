@@ -13,7 +13,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.2.5"
+val projectVersion = "1.2.6"
 //val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
 version = projectVersion
 

@@ -64,7 +64,7 @@ Add the dependency to your module:
 
 ```kotlin
 dependencies {
-    implementation("io.github.karloti:typeahead-kmp:1.2.4") // replace with latest version
+    implementation("io.github.karloti:typeahead-kmp:1.2.6") // replace with latest version
 }
 ```
 
@@ -145,7 +145,7 @@ data class City(val id: String, val name: String)
 val cities = listOf(City("1", "Sofia"), City("2", "Plovdiv"), City("3", "Varna"))
 
 // 2. Initialize the engine by providing a selector lambda
-val searchEngine = TypeaheadSearchEngine<City>(textSelector = { it.name })
+val searchEngine = TypeaheadSearchEngine<City> { it.name }
 
 coroutineScope.launch {
     // 3. Batch load your data (Utilizes all CPU cores for parallel vectorization)

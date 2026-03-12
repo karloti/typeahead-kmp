@@ -20,8 +20,8 @@ import kotlin.collections.iterator
  * @param defaultDispatcher The coroutine dispatcher used for heavy vectorization. Defaults to [Dispatchers.Default].
  */
 class TypeaheadSearchEngine<T>(
-    private val textSelector: (T) -> String,
-    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
+    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val textSelector: (T) -> String = { it.toString() }
 ) {
 
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
@@ -179,5 +179,14 @@ class TypeaheadSearchEngine<T>(
 
         // Atomic update of the entire vector space
         _embeddings.value = newMap
+    }
+
+    companion object {
+        suspend operator fun <T> invoke(
+            items: Iterable<T>,
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            textSelector: (T) -> String = { it.toString() }
+        ) = TypeaheadSearchEngine(defaultDispatcher, textSelector)
+            .apply { addAll(items) }
     }
 }
