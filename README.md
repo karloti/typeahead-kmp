@@ -78,7 +78,7 @@ Here is how the engine's internal mathematical weighting dynamically reacts at e
 ### Step 1: Initial Input (L2 Normalization & Short-Word Bias)
 At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) anchor heavily restricts the search space. Because the input is extremely short, **L2 Normalization** naturally favors shorter words (Short-Word Bias). This brings 4-letter countries like `Cuba` and `Chad` to the top. By the second keystroke, `Canada` barely enters the top 5.
 
-```kotlin
+```lua
 === Typing: 'C' with typing error of 'Cnada' ===
 1. Cuba - Score: 0.19181583900475285
 2. Chad - Score: 0.19181583900475285
@@ -96,7 +96,7 @@ At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) a
 ### Step 2: Transposition Recovery (Fuzzy Prefix)
 The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Canada" entirely at this exact moment. Our **Fuzzy Prefix** dynamically anchors the first letter (`C`) and alphabetically sorts the remaining characters (`a`, `n`). Both the input `Cna` and the target `Can` generate the exact same spatial feature (`FPR_c_an`). `Canada` instantly rockets to the #1 spot!
 
-```kotlin
+```lua
 === Typing: 'Cna' with typing error of 'Cnada' ===
 1. Canada - Score: 0.14257617990546595 <-- Rockets to #1 via Fuzzy Prefix intersection!
 2. Chad - Score: 0.08281542504942256
@@ -108,7 +108,7 @@ The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Cana
 ### Step 3: Spellchecker Takeover (Typoglycemia Gestalt)
 The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Spellchecker Mode" via the **Typoglycemia Gestalt Anchor**. It detects a 4-letter word starting with `C` and ending with `d`. The algorithm mathematically assumes the user is actively trying to spell `Chad` and applies a massive 15.0 spatial intersection multiplier to that specific vector, temporarily overtaking `Canada`.
 
-```kotlin
+```lua
 === Typing: 'Cnad' with typing error of 'Cnada' ===
 1. Chad - Score: 0.1853988462303561 <-- Massive spike due to Gestalt anchor (C...d)!
 2. Canada - Score: 0.1278792484954006
@@ -120,7 +120,7 @@ The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Sp
 ### Step 4: Final Resolution (Skip-Grams & N-Grams)
 The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) completely breaks. The engine reverts to deep structural analysis. Overlapping Skip-Grams seamlessly bridge the transposed letters (`C-n-a-d-a`). This structural skeleton perfectly aligns with the core features of `Canada`, accumulating a massive dot-product score that completely overcomes the length penalty. `Canada` firmly reclaims the #1 spot!
 
-```kotlin
+```lua
 === Typing: 'Cnada' with typing error of 'Cnada' ===
 1. Canada - Score: 0.2563201621199545 <-- Reclaims the lead via deep structural sequence momentum!
 2. China - Score: 0.10623856459894943
@@ -191,7 +191,7 @@ The engine is built on top of a custom `BoundedConcurrentPriorityQueue` utilizin
 
 **Test Outputs:**
 
-```prototext
+```lua
 Starting aggressive multi-threading test...
 All threads finished. Running exact verification...
 ✅ Ultimate Thread-safety and Accuracy test passed perfectly!
