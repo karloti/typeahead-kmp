@@ -137,31 +137,43 @@ The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) comp
 The library behaves like an asynchronous, thread-safe, mutable collection.
 
 ### 1. Basic Setup & Searching
+
 ```kotlin
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.launch
 
 // 1. Define your domain model
-data class City(val id: String, val name: String)
+data class Country(val id: String, val name: String)
 
-val cities = listOf(City("1", "Sofia"), City("2", "Plovdiv"), City("3", "Varna"))
+val countries = listOf(
+    Country("BG", "Bulgaria"),
+    Country("BE", "Belgium"),
+    Country("BR", "Brazil")
+)
 
-// 2. Initialize the engine by providing a selector lambda
-val searchEngine = TypeaheadSearchEngine<City> { it.name }
+// 2. Initialize the engine by providing a text selector lambda
+val searchEngine = TypeaheadSearchEngine<Country> { it.name }
 
 coroutineScope.launch {
-    // 3. Batch load your data (Utilizes all CPU cores for parallel vectorization)
-    searchEngine.addAll(cities)
+    // 3. Batch load your data 
+    // (Utilizes Bounded Concurrency / flatMapMerge under the hood for zero memory bloat)
+    searchEngine.addAll(countries)
 
-    // 4. Search with a typo
-    val results = searchEngine.find("Plovdvi", maxResults = 5)
+    // 4. Search with a typo to get results with UI highlighting tiers
+    val results = searchEngine.findWithHighlights("Bulagria", maxResults = 5)
 
-    results.forEach { (city, score) ->
-        println("Found: ${city.name} (Score: $score)") 
-        // Score is a Cosine Similarity Double between 0.0 and 1.0
+    results.forEach { match ->
+        val country = match.item
+        val score = match.score
+        val heatmap = match.heatmap // IntArray mapping each char to a visual tier
+
+        println("Found: ${country.name} (Score: $score)")
+        // Score is a Cosine Similarity Float between 0.0f and 1.0f
     }
 }
 ```
+
+![img.png](assets/img.png)
 
 ### 2. State Persistence (Import / Export)
 Calculating vector embeddings for tens of thousands of items is CPU-intensive. To prevent `OutOfMemory` (OOM) errors and speed up app startup, the engine supports **Stream-based Serialization** using Kotlin `Sequence`.

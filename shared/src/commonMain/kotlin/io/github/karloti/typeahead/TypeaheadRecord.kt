@@ -29,5 +29,5 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class TypeaheadRecord<T>(
     val item: T,
-    val vector: Map<String, Double>
+    val vector: SparseVector
 )
