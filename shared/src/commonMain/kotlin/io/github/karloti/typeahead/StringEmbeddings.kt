@@ -21,56 +21,42 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
 
-const val EPSILON = 1e-10
-const val TOLERANCE = 1e-15
-
+const val EPSILON_FLOAT = 1e-7f
+const val TOLERANCE_FLOAT = 1e-6f
 
 /**
  * Generates an L2-normalized hybrid positional N-gram embedding from the given string.
  *
- * This function constructs a sparse vector representing linguistic and structural
- * features of the string. It is optimized for typeahead and fuzzy matching by
- * combining anchors, prefixes (strict and fuzzy), skip-grams, and floating N-grams.
+ * This function constructs a sparse vector utilizing 32-bit floating-point precision
+ * to maximize memory efficiency on Edge devices. The resulting vector is L2-normalized,
+ * ensuring its magnitude is 1.0f, which allows direct cosine similarity calculation
+ * via the dot product.
  *
- * The resulting vector is normalized using the L2 (Euclidean) norm. This ensures
- * that the magnitude of the vector is 1.0, allowing similarity to be calculated
- * via the dot product of two embeddings.
- *
- * @param maxNgramSize The maximum length of floating N-grams to extract. Larger values capture
- * more context but increase vector sparsity.
- * @param anchorWeight The weight assigned to the first character of the string. High values
- * prioritize matches that share the same starting letter.
- * @param lengthWeight The weight assigned to the length of the string. This helps filter
- * candidates by their physical size.
- * @param gestaltWeight The weight for the "Gestalt" feature (start char + length + end char).
- * Captures the overall visual "shape" of the word, resilient to internal typos.
- * @param prefixWeight The base multiplier for strict prefix matches. Weights grow linearly
- * with prefix length to reward deeper sequence matches.
- * @param fuzzyWeight The base multiplier for "fuzzy" prefixes. These features sort the characters
- * after the first letter, making the embedding resilient to character transpositions near the start.
- * @param skipWeight The weight for skip-grams (pairs of characters separated by one position).
- * This bridges gaps caused by single-character deletions or insertions.
- * @param floatingWeight The base weight for standard sliding-window N-grams ($2 \leq n \leq maxNgramSize$).
- * These form the structural backbone of the embedding.
- * * @return A [Map] representing a sparse vector where keys are feature identifiers and
- * values are their L2-normalized weights. Returns an empty map if the string is empty.
- * * @throws Exception Can yield during heavy loops to support non-blocking execution in coroutines.
+ * @param maxNgramSize The maximum length of the sliding N-grams.
+ * @param anchorWeight Weight for the first character, crucial for typeahead reliability.
+ * @param lengthWeight Weight for the word length, used to synchronize candidates of similar size.
+ * @param gestaltWeight Weight for the "Gestalt" feature.
+ * @param prefixWeight Base multiplier for strict prefix matches.
+ * @param fuzzyWeight Base multiplier for sorted prefixes.
+ * @param skipWeight Weight for skip-grams.
+ * @param floatingWeight Base weight for standard sliding-window N-grams.
+ * @return A highly optimized [SparseVector]. Returns an empty vector if the string is empty.
  */
 suspend fun String.toPositionalEmbedding(
     maxNgramSize: Int = 4,
-    anchorWeight: Double = 10.0,
-    lengthWeight: Double = 8.0,
-    gestaltWeight: Double = 15.0,
-    prefixWeight: Double = 6.0,
-    fuzzyWeight: Double = 5.0,
-    skipWeight: Double = 4.0,
-    floatingWeight: Double = 2.5,
-): Map<String, Double> {
-    val vector = mutableMapOf<String, Double>()
+    anchorWeight: Float = 10.0f,
+    lengthWeight: Float = 8.0f,
+    gestaltWeight: Float = 15.0f,
+    prefixWeight: Float = 6.0f,
+    fuzzyWeight: Float = 5.0f,
+    skipWeight: Float = 4.0f,
+    floatingWeight: Float = 2.5f,
+): SparseVector {
+    val vector = mutableMapOf<String, Float>()
     val word = this.lowercase()
     val length = word.length
 
-    if (length == 0) return vector
+    if (length == 0) return SparseVector(emptyArray(), FloatArray(0))
 
     // 1. P0 Anchor (Absolute foundation)
     // The first letter is highly reliable in typeahead scenarios.
@@ -105,7 +91,7 @@ suspend fun String.toPositionalEmbedding(
     // 5. Skip-Grams (Bridge for deletions and insertions)
     for (i in 0 until length - 2) {
         val skipKey = "${word[i]}${word[i + 2]}"
-        vector[skipKey] = (vector[skipKey] ?: 0.0) + skipWeight
+        vector[skipKey] = (vector[skipKey] ?: 0.0f) + skipWeight
     }
 
     // 6. Floating N-Grams (The structural skeleton)
@@ -115,7 +101,7 @@ suspend fun String.toPositionalEmbedding(
                 val ngram = word.substring(i, i + n)
                 // Linear progression for weights avoids complex branching operations.
                 val weight = n * floatingWeight
-                vector[ngram] = (vector[ngram] ?: 0.0) + weight
+                vector[ngram] = (vector[ngram] ?: 0.0f) + weight
             }
         }
         yield()
@@ -124,20 +110,25 @@ suspend fun String.toPositionalEmbedding(
     // --- L2 Normalization ---
     // Mathematically balances the vector, implicitly penalizing length disparities
     // unless compensated by substantial feature intersections.
-    var sumOfSquares = 0.0
+    var sumOfSquares = 0.0f
     for (weight in vector.values) {
         sumOfSquares += weight * weight
     }
 
-    val magnitude = sqrt(sumOfSquares)
+    val magnitude = sqrt(sumOfSquares.toDouble()).toFloat()
 
-    if (magnitude < EPSILON) return emptyMap()
-    if (abs(magnitude - 1.0) < TOLERANCE) return vector
+    if (magnitude < EPSILON_FLOAT) return SparseVector(emptyArray(), FloatArray(0))
 
-    val normalizedVector = mutableMapOf<String, Double>()
-    for ((key, weight) in vector) {
-        normalizedVector[key] = weight / magnitude
+    val isAlreadyNormalized = abs(magnitude - 1.0f) < TOLERANCE_FLOAT
+
+    val sortedKeys = vector.keys.sorted().toTypedArray()
+    val primitiveWeights = FloatArray(sortedKeys.size)
+
+    for (i in sortedKeys.indices) {
+        val key = sortedKeys[i]
+        val rawWeight = vector[key]!!
+        primitiveWeights[i] = if (isAlreadyNormalized) rawWeight else (rawWeight / magnitude)
     }
 
-    return normalizedVector
+    return SparseVector(features = sortedKeys, weights = primitiveWeights)
 }
