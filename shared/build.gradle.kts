@@ -15,11 +15,11 @@
  */
 
 @file:OptIn(ExperimentalWasmDsl::class)
+@file:Suppress("UnstableApiUsage")
 
 import com.android.build.api.dsl.androidLibrary
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.gradle.plugins.signing.SigningExtension
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -29,8 +29,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.2.7"
-//val projectVersion = project.findProperty("version")?.toString() ?: "1.0.2-SNAPSHOT"
+val projectVersion = "1.3.1"
 version = projectVersion
 
 kotlin {
@@ -45,13 +44,8 @@ kotlin {
         withDeviceTestBuilder {
             sourceSetTreeName = "test"
         }
-
-        compilations.configureEach {
-            compilerOptions.configure {
-                jvmTarget.set(
-                    JvmTarget.JVM_11
-                )
-            }
+        compilerOptions {
+            jvmTarget = JvmTarget.JVM_11
         }
     }
     iosX64()
@@ -59,20 +53,13 @@ kotlin {
     iosSimulatorArm64()
     linuxX64()
     js {
-        browser(){
+        browser {
             testTask {
                 useMocha {
                     timeout = "60000"
                 }
             }
         }
-//        nodejs {
-//            testTask {
-//                useMocha {
-//                    timeout = "30000"
-//                }
-//            }
-//        }
     }
 
     wasmJs {

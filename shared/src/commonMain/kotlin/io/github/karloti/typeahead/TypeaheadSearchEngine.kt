@@ -52,7 +52,7 @@ class TypeaheadSearchEngine<T>(
      * @param maxResults The maximum number of top results to return.
      * @return A sorted list of pairs containing the matched object and its similarity score [0.0 - 1.0].
      */
-    suspend fun find(query: String, maxResults: Int = 20): List<Pair<T, Double>> {
+    suspend fun find(query: String, maxResults: Int = 5): List<Pair<T, Double>> {
         if (query.isBlank()) return emptyList()
 
         return withContext(defaultDispatcher) {
