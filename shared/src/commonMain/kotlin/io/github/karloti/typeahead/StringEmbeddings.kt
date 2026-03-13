@@ -28,7 +28,16 @@ import kotlin.math.sqrt
  * @param maxNgramSize The maximum length of the floating N-grams. Default is 4.
  * @return A sparse vector represented as a Map where the key is the feature and the value is its L2-normalized weight.
  */
-suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 4): Map<String, Double> {
+suspend fun String.toPositionalEmbedding(
+    maxNgramSize: Int = 4,
+    anchorWeight: Double = 10.0,
+    lengthWeight: Double = 8.0,
+    gestaltWeight: Double = 15.0,
+    prefixWeight: Double = 6.0,
+    fuzzyWeight: Double = 5.0,
+    skipWeight: Double = 4.0,
+    floatingWeight: Double = 2.5,
+): Map<String, Double> {
     val vector = mutableMapOf<String, Double>()
     val word = this.lowercase()
     val length = word.length
@@ -37,16 +46,16 @@ suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 4): Map<String, Dou
 
     // 1. P0 Anchor (Absolute foundation)
     // The first letter is highly reliable in typeahead scenarios.
-    vector["P0_${word[0]}"] = 10.0
+    vector["A_${word[0]}"] = anchorWeight
 
     // 2. Length Bucket (Length synchronizer)
     // Elevates words with the exact same length during typographical errors.
-    vector["LEN_$length"] = 8.0
+    vector["L_$length"] = lengthWeight
 
     // 3. Typoglycemia Gestalt Anchor
     // Captures perfectly 1-character typos where the length, first, and last characters match.
     if (length > 1) {
-        vector["GESTALT_${word[0]}_${length}_${word.last()}"] = 15.0
+        vector["G_${word[0]}_${length}_${word.last()}"] = gestaltWeight
     }
 
     // 4. Strict & Fuzzy Prefixes (The core of Typeahead)
@@ -54,13 +63,13 @@ suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 4): Map<String, Dou
         val prefix = word.substring(0, i)
 
         // Strict Prefix: Rewards perfect typing sequence.
-        vector["PR_$prefix"] = i * 6.0
+        vector["P_$prefix"] = i * prefixWeight
 
         if (i >= 2) {
             // Fuzzy Prefix: Mitigates transpositions (e.g., "Cna" vs "Canada").
             // Anchors the first character and sorts the remainder of the prefix.
             val sortedRest = prefix.substring(1).toCharArray().apply { sort() }.joinToString("")
-            vector["FPR_${word[0]}_$sortedRest"] = i * 5.0
+            vector["F_${word[0]}_$sortedRest"] = i * fuzzyWeight
         }
         yield()
     }
@@ -68,7 +77,7 @@ suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 4): Map<String, Dou
     // 5. Skip-Grams (Bridge for deletions and insertions)
     for (i in 0 until length - 2) {
         val skipKey = "${word[i]}${word[i + 2]}"
-        vector[skipKey] = (vector[skipKey] ?: 0.0) + 4.0
+        vector[skipKey] = (vector[skipKey] ?: 0.0) + skipWeight
     }
 
     // 6. Floating N-Grams (The structural skeleton)
@@ -77,7 +86,7 @@ suspend fun String.toPositionalEmbedding(maxNgramSize: Int = 4): Map<String, Dou
             if (i + n <= length) {
                 val ngram = word.substring(i, i + n)
                 // Linear progression for weights avoids complex branching operations.
-                val weight = n * 2.5
+                val weight = n * floatingWeight
                 vector[ngram] = (vector[ngram] ?: 0.0) + weight
             }
         }

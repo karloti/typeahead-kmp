@@ -87,15 +87,44 @@ class TypeaheadSearchEngineTest {
     fun testTypingSimulationWithScoreProgression() = runTest(timeout = 1.minutes){
         val searchEngine = TypeaheadSearchEngine<String>()
         val checkResult = listOf(
-            listOf("Cuba", "Chad", "China", "Chile", "Cyprus"),
-            listOf("Cuba", "Chad", "China", "Chile", "Cyprus"),
-            listOf("Chad", "Cuba", "China", "Chile", "Cyprus"),
-            listOf("Chad", "Cuba", "China", "Chile", "Cyprus"),
-            listOf("China", "Chad", "Grenada", "Chile", "Cuba"),
+            listOf(
+                "Cuba",
+                "Chad",
+                "China",
+                "Chile",
+                "Cyprus"
+            ),
+            listOf(
+                "Cuba",
+                "Chad",
+                "China",
+                "Chile",
+                "Canada"
+            ),
+            listOf(
+                "Canada",
+                "Chad",
+                "Cuba",
+                "China",
+                "Chile"
+            ),
+            listOf(
+                "Chad",
+                "Canada",
+                "Cuba",
+                "China",
+                "Chile"
+            ),
+            listOf(
+                "Canada",
+                "China",
+                "Chad",
+                "Grenada",
+                "Chile"
+            ),
         )
         launch {
             searchEngine.addAll(countries)
-            searchEngine.remove("Canada")
 
             val queryToType = "Cnada"
 
