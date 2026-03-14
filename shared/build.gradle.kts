@@ -29,7 +29,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.4.1"
+val projectVersion = "1.5.0"
 version = projectVersion
 
 kotlin {
@@ -75,6 +75,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.collections.immutable)
             implementation(libs.kotlinx.serialization.json)
         }
 

@@ -26,14 +26,15 @@ import kotlin.math.min
  * A lock-free, thread-safe bounded priority queue optimized for Kotlin Multiplatform.
  * It utilizes atomic Compare-And-Swap (CAS) operations via [MutableStateFlow]
  * to maintain high performance across multiple concurrent writers and readers.
- * * This data structure is specifically designed to efficiently maintain a "Top-K"
+ *
+ * This data structure is specifically designed to efficiently maintain a "Top-K"
  * list of search results during heavy concurrent evaluations.
  *
  * @param T The type of elements held in this queue.
  * @param maxSize The maximum number of elements the queue can hold.
  * @param comparator The comparator used to order the elements.
  */
-class BoundedConcurrentPriorityQueue<T>(
+internal class BoundedConcurrentPriorityQueue<T>(
     private val maxSize: Int,
     private val comparator: Comparator<T>
 ) {
@@ -41,15 +42,21 @@ class BoundedConcurrentPriorityQueue<T>(
 
     /**
      * A reactive stream of the current items in the queue.
-     * Can be observed directly by UI components for real-time updates.
+     *
+     * This list is always sorted according to the [comparator] and its size
+     * is guaranteed to be at most [maxSize]. It can be observed directly
+     * by UI components for real-time updates.
      */
     val items: StateFlow<List<T>> = _items.asStateFlow()
 
     /**
      * Attempts to add an item to the bounded queue.
+     *
      * If the queue is at capacity and the item is evaluated as having a lower priority
      * than the lowest item currently in the queue, it is immediately discarded to prevent
      * unnecessary memory allocations.
+     *
+     * This method is thread-safe and can be called concurrently from multiple coroutines.
      *
      * @param item The element to add.
      */
@@ -61,19 +68,14 @@ class BoundedConcurrentPriorityQueue<T>(
             }
 
             var index = currentList.binarySearch(item, comparator)
-            if (index < 0) {
-                index = -(index + 1)
-            }
+
+            if (index < 0) index = -(index + 1)
 
             val newList = ArrayList<T>(min(currentList.size + 1, maxSize))
 
-            for (i in 0 until index) {
-                newList.add(currentList[i])
-            }
+            for (i in 0 until index) newList.add(currentList[i])
 
-            if (newList.size < maxSize) {
-                newList.add(item)
-            }
+            if (newList.size < maxSize) newList.add(item)
 
             for (i in index until currentList.size) {
                 if (newList.size >= maxSize) break

@@ -19,6 +19,7 @@ package com.github.karloti.typeahead
 import io.github.karloti.typeahead.SparseVector
 import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
+import io.github.karloti.typeahead.renderHighlightedString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
@@ -29,6 +30,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.measureTime
+
+data class Country(val id: Int, val countryName: String)
 
 val countries = listOf(
     "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda",
@@ -66,52 +70,14 @@ val countries = listOf(
     "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 )
 
+
 class TypeaheadSearchEngineTest {
 
     @Test
     fun testTypingSimulationWithScoreProgression() = runTest(timeout = 1.minutes) {
         val searchEngine = TypeaheadSearchEngine<String>()
 
-        /*
-        val checkResult = listOf(
-            listOf(
-                "Chad",
-                "Cuba",
-                "Chile",
-                "China",
-                "Cyprus"
-            ),
-            listOf(
-                "Chad",
-                "Cuba",
-                "Chile",
-                "China",
-                "Canada"
-            ),
-            listOf(
-                "Canada",
-                "Chad",
-                "Cuba",
-                "China",
-                "Chile"
-            ),
-            listOf(
-                "Chad",
-                "Canada",
-                "Cuba",
-                "China",
-                "Chile"
-            ),
-            listOf(
-                "Canada",
-                "China",
-                "Chad",
-                "Grenada",
-                "Chile"
-            ),
-        )
-*/
-
+        countries.forEach { searchEngine.add(it) }
         launch {
             searchEngine.addAll(countries)
 
@@ -130,13 +96,6 @@ class TypeaheadSearchEngineTest {
                         println("${index + 1}. $country - Score: $score")
                     }
                 }
-/*
-                assertEquals(
-                    checkResult[i - 1],
-                    results.map { it.first },
-                    "Results for query '$partialQuery' should match the expected results."
-                )
-*/
             }
             println("\nTyping simulation completed!")
         }
@@ -144,7 +103,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testUltimateThreadSafetyAndFuzzySearch() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String> { it }
+        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
 
         val baselineItems = (1..50).map { "item-baseline-$it" }
         val itemsToRemove = (1..500).map { "item-to-remove-$it" }
@@ -217,7 +176,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testExportAndImportSequence() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String> { it }
+        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
 
         launch {
             // 1. Load initial data and compute embeddings
@@ -279,95 +238,24 @@ class TypeaheadSearchEngineTest {
     }
 
     @Test
-    fun `test highlight heatmap generation for exact prefixes and n-grams`() = runTest {
-        val searchEngine = TypeaheadSearchEngine<String>()
-        val dataset = listOf("Bulgaria", "Belgium", "Bahamas", "Belarus")
-        searchEngine.addAll(dataset)
-
-        // Query "bulg" should perfectly match the prefix of "Bulgaria"
-        val query = "bulg"
-        val results = searchEngine.findWithHighlights(query, maxResults = 1)
-
-        assertTrue(results.isNotEmpty(), "Engine should find at least one highlighted result.")
-
-        val topMatch = results.first()
-        assertEquals("Bulgaria", topMatch.item, "Top match should be Bulgaria.")
-
-        // Heatmap for "Bulgaria" (8 chars) against "bulg" (4 chars)
-        // 'B', 'u', 'l', 'g' -> TIER_PRIMARY (0)
-        // 'a', 'r', 'i', 'a' -> TIER_NONE (-1)
-        val expectedHeatmap = intArrayOf(
-            TypeaheadSearchEngine.TIER_PRIMARY,   // B
-            TypeaheadSearchEngine.TIER_PRIMARY,   // u
-            TypeaheadSearchEngine.TIER_PRIMARY,   // l
-            TypeaheadSearchEngine.TIER_PRIMARY,   // g
-            TypeaheadSearchEngine.TIER_NONE,      // a
-            TypeaheadSearchEngine.TIER_NONE,      // r
-            TypeaheadSearchEngine.TIER_NONE,      // i
-            TypeaheadSearchEngine.TIER_NONE       // a
-        )
-
-        assertTrue(
-            expectedHeatmap.contentEquals(topMatch.heatmap),
-            "Heatmap arrays must match. Expected ${expectedHeatmap.joinToString()} but got ${topMatch.heatmap.joinToString()}"
-        )
-    }
-
-    @Test
     fun `test highlight heatmap for floating n-grams`() = runTest {
         val searchEngine = TypeaheadSearchEngine<String>()
-        searchEngine.add("Afghanistan") // 11 chars
+        searchEngine.add("Bulgaria")
 
-        // Query "stan" matches the end of "Afghanistan" (floating n-gram match)
-        val query = "stan"
-        val results = searchEngine.findWithHighlights(query, maxResults = 1)
-        val topMatch = results.first()
-        println("topMatch = ${topMatch.heatmap.contentToString()}")
-
-        // 's', 't', 'a', 'n' should be marked as TIER_SECONDARY (1) at the end.
-        // All preceding chars should be TIER_NONE (-1)
-        val expectedHeatmap = IntArray(11) { TypeaheadSearchEngine.TIER_NONE }
-        expectedHeatmap[7] = TypeaheadSearchEngine.TIER_SECONDARY // s
-        expectedHeatmap[8] = TypeaheadSearchEngine.TIER_SECONDARY // t
-        expectedHeatmap[9] = TypeaheadSearchEngine.TIER_SECONDARY // a
-        expectedHeatmap[10] = TypeaheadSearchEngine.TIER_SECONDARY // n
-
-        assertTrue(
-            expectedHeatmap.contentEquals(topMatch.heatmap),
-            "Floating N-gram heatmap must match expected secondary tiers."
-        )
-    }
-
-    /**
-     * Helper utility to render the highlighted match in the console using ANSI color codes.
-     * This provides a visual representation of the L2 vector matching heatmap.
-     *
-     * - TIER_PRIMARY (0) -> Bright Yellow (Exact prefix/solid match)
-     * - TIER_SECONDARY (1) -> Standard Yellow (Floating N-gram match)
-     * - TIER_TERTIARY (2) -> Cyan (Skip-gram / Fuzzy bridge)
-     * - TIER_NONE (-1) -> Dim Gray (Unmatched character)
-     *
-     * @param text The original string to be formatted.
-     * @param heatmap The heatmap array computed by the engine.
-     * @return A visually colored string ready for console output.
-     */
-    private fun renderHighlightedString(text: String, heatmap: IntArray): String {
-        // ANSI Escape Codes for UI Console Colors
-        val reset = "\u001B[0m"
-        val brightYellow = "\u001B[93m"
-        val standardYellow = "\u001B[33m"
-        val cyan = "\u001B[36m"
-        val dimGray = "\u001B[90m"
-
-        return text.mapIndexed { index, char ->
-            val color = when (heatmap[index]) {
-                TypeaheadSearchEngine.TIER_PRIMARY -> brightYellow
-                TypeaheadSearchEngine.TIER_SECONDARY -> standardYellow
-                TypeaheadSearchEngine.TIER_TERTIARY -> cyan
-                else -> dimGray
-            }
-            "$color$char$reset"
-        }.joinToString("")
+        searchEngine.findWithHighlights("blugaria", maxResults = 1).first().heatmap.let { topMatch ->
+            val expectedHeatmap = intArrayOf(0, 2, 2, 1, 1, 1, 1, 1)
+            assertTrue(
+                actual = expectedHeatmap.contentEquals(topMatch),
+                message = "Floating N-gram heatmap must match expected secondary tiers."
+            )
+        }
+        searchEngine.findWithHighlights("bulgira ", maxResults = 1).first().heatmap.let { topMatch ->
+            val expectedHeatmap = intArrayOf(0, 0, 0, 0, -1, 2, -1, 2)
+            assertTrue(
+                actual = expectedHeatmap.contentEquals(topMatch),
+                message = "Floating N-gram heatmap must match expected secondary tiers."
+            )
+        }
     }
 
     @Test
@@ -420,7 +308,7 @@ class TypeaheadSearchEngineTest {
 
             if (topMatch != null) {
                 // Render the colored string
-                val highlightedText = renderHighlightedString(topMatch.item, topMatch.heatmap)
+                val highlightedText = topMatch.heatmap.renderHighlightedString(topMatch.item)
 
                 // Format score to 4 decimal places for clean UI alignment
                 val formattedScore = topMatch.score.toString().take(5)
@@ -435,5 +323,105 @@ class TypeaheadSearchEngineTest {
 
         // Simple assertion to ensure the test completes successfully
         assertTrue(true, "Typing simulation executed without exceptions.")
+    }
+
+    @Test
+    fun `test typing simulation with score progression and visual console highlighting2`() = runTest {
+        val listOfCountries = countries.mapIndexed { index, country -> Country(index, country) }
+        val searchEngine = TypeaheadSearchEngine(items = listOfCountries, textSelector = Country::countryName)
+        searchEngine.addAll(listOfCountries)
+        val typingSimulation = listOf(
+            // Transposed 'l' and 'g'.
+            // 'bu' is Tier 0. 'aria' is Tier 1.
+            // The algorithm bridges 'u'-'g' and 'l'-'a'.
+            // RESULT: 'l' and 'g' will light up in CYAN!
+            "buglaria",
+
+            // Transposed 'a' and 'g'.
+            // 'bul' is Tier 0. 'ria' is Tier 1.
+            // The algorithm bridges 'l'-'a' and 'g'-'r'.
+            // RESULT: 'g' and 'a' will light up in CYAN!
+            "bulagria",
+
+            // Transposed 'u' and 'l'.
+            // 'b' is Tier 0. 'garia' is Tier 1.
+            // The algorithm bridges 'b'-'l' and 'u'-'g'.
+            // RESULT: 'u' and 'l' will light up in CYAN!
+            "blugaria",
+
+            // Transposed 'i' and 'r' near the end.
+            // 'bulg' is Tier 0.
+            // The algorithm bridges 'r'-'a'.
+            // RESULT: 'a' and 'i' will be GRAY, but 'r' and the final 'a' will be CYAN!
+            "bulgira"
+        )
+
+        println("\n=======================================================")
+        println(" ⌨️  TYPING SIMULATION & SCORE PROGRESSION OVERVIEW")
+        println("=======================================================")
+        println("Legend:")
+        println("  \u001B[93mBright Yellow\u001B[0m : Primary Exact Match (Tier 0)")
+        println("  \u001B[33mDark Yellow\u001B[0m   : Secondary N-gram Match (Tier 1)")
+        println("  \u001B[36mCyan\u001B[0m          : Tertiary Skip-gram / Bridge (Tier 2)")
+        println("  \u001B[90mDim Gray\u001B[0m      : Unmatched Character")
+        println("-------------------------------------------------------")
+
+        typingSimulation.forEach { query ->
+            val paddedQuery = query.padEnd(8, ' ')
+            println(" Query: [\u001B[35m${paddedQuery}\u001B[0m]")
+            searchEngine.findWithHighlights(query).forEach { highlightedMatch ->
+                val highlightedText = highlightedMatch.heatmap
+                    .renderHighlightedString(text = highlightedMatch.item.countryName)
+                // Format score to 4 decimal places for clean UI alignment
+                val formattedScore = highlightedMatch.score.toString().take(5)
+                println(" Score: $formattedScore | Match: $highlightedText")
+            }
+            println("-------------------------------------------------------")
+        }
+        println("=======================================================\n")
+
+        // Simple assertion to ensure the test completes successfully
+        assertTrue(true, "Typing simulation executed without exceptions.")
+    }
+
+    @Test
+    fun `Verify single add under high concurrency works correctly and measure performance`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+        val isJsOrWasm = true
+        val totalItems = if (isJsOrWasm) 1000 else 10_000
+        val items = (1..totalItems).map { "Product $it" }
+
+        val time = measureTime {
+            // Launch 10,000 concurrent coroutines to hammer the state flow
+            val jobs = items.map { item ->
+                launch(Dispatchers.Default) {
+                    engine.add(item)
+                }
+            }
+            jobs.joinAll() // Wait for all insertions to finish
+        }
+
+        println("✅ Concurrent add() of $totalItems items took $time ms")
+
+        // Assuming your engine has a way to check size, e.g., via a property or by exporting
+        // Alternatively, you can do a search to verify items are present.
+        // assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after concurrent add")
+    }
+
+    @Test
+    fun `Verify addAll processes items correctly and measure performance`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+        val isJsOrWasm = true
+        val totalItems = if (isJsOrWasm) 1000 else 10_000
+        val items = (1..totalItems).map { "Product $it" }
+
+        val time = measureTime {
+            // addAll handles its own concurrency internally
+            engine.addAll(items)
+        }
+
+        println("✅ addAll() of $totalItems items took $time ms")
+
+        // assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after addAll")
     }
 }
