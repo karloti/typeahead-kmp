@@ -51,7 +51,44 @@ kotlin {
     iosX64()
     iosArm64()
     iosSimulatorArm64()
-    linuxX64()
+    macosX64()
+    macosArm64()
+    mingwX64 {
+        binaries {
+            executable {
+                entryPoint = "main"
+                runTask?.apply {
+                    args(
+                        listOf(
+                            "--path",
+                            "C:\\Users\\skarl\\AndroidStudioProjects\\RealRate",
+                            "--name",
+                            "shared.exe"
+                        )
+
+                    )
+                }
+            }
+        }
+    }
+    linuxX64 {
+        binaries {
+            executable {
+                entryPoint = "main"
+                runTask?.apply {
+                    args(
+                        listOf(
+                            "--path",
+                            "C:\\Users\\skarl\\AndroidStudioProjects\\RealRate",
+                            "--name",
+                            "shared.exe"
+                        )
+
+                    )
+                }
+            }
+        }
+    }
     js {
         browser {
             testTask {
@@ -77,11 +114,23 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.collections.immutable)
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.squareup.okio)
+            implementation(libs.kotlinx.atomicfu)
         }
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.test)
+        }
+
+        mingwX64Main.dependencies {
+            implementation("com.github.ajalt.mordant:mordant:3.0.2")
+            implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
+        }
+
+        linuxX64Main.dependencies {
+            implementation("com.github.ajalt.mordant:mordant:3.0.2")
+            implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
         }
     }
 }
@@ -124,4 +173,20 @@ mavenPublishing {
 extensions.configure<SigningExtension> {
     useGpgCmd()
     sign(publishing.publications)
+}*/
+
+/*
+tasks.register("createMissingSourceDirs") {
+    group = "setup"
+    description = "Creates all missing source set directories for Kotlin Multiplatform"
+
+    doLast {
+        kotlin.sourceSets.forEach { sourceSet ->
+            sourceSet.kotlin.srcDirs.forEach { dir ->
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+            }
+        }
+    }
 }*/

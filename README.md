@@ -67,11 +67,9 @@ Retrieve matches along with a character-level heatmap for UI highlighting:
 ```kotlin
 val results = searchEngine.findWithHighlights("buglaria", maxResults = 5)
 
-results.forEach { highlightedMatch ->
-    val highlightedText = highlightedMatch.heatmap
-        .renderHighlightedString(text = highlightedMatch.item.countryName)
-    // Format score to 4 decimal places for clean UI alignment
-    val formattedScore = highlightedMatch.score.toString().take(5)
+results.forEach { (country, score, heatmap) ->
+    val highlightedText = heatmap.renderHighlightedString(country.countryName)
+    val formattedScore = score.toString().take(5)
     println(" Score: $formattedScore | Match: $highlightedText")
 }
 ```
@@ -89,23 +87,38 @@ shipping a static JSON file.
 ### Exporting:
 
 ```kotlin
-val fileWriter = File("vectors.json").bufferedWriter()
-searchEngine.exportToSequence().forEach { record ->
-    val jsonLine = myJsonSerializer.toJson(record)
-    fileWriter.write(jsonLine + "\n")
-}
-fileWriter.close()
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
+
+// 1. Export the engine's internal state to a list
+val exportedRecords = searchEngine.exportAsSequence().toList()
+
+// 2. Serialize the records to a JSON string using kotlinx.serialization
+val jsonString = Json.encodeToString(exportedRecords)
+
+// 3. Write the JSON directly to a file
+File("typeahead_vectors.json").writeText(jsonString)
 ```
 
 ### Importing (Instant Restore):
 
 ```kotlin
-// Restore the engine instantly without recalculating vectors
-val sequenceOfRecords = File("vectors.json").useLines { lines ->
-    lines.map { myJsonSerializer.fromJson<TypeaheadRecord<City>>(it) }
-}
-searchEngine.importFromSequence(sequenceOfRecords)
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import io.github.karloti.typeahead.TypeaheadRecord
+import java.io.File
+
+// 1. Read the JSON string from the file
+val jsonFromFile = File("typeahead_vectors.json").readText()
+
+// 2. Deserialize the JSON back into a List of TypeaheadRecord objects
+val deserializedRecords = Json.decodeFromString<List<TypeaheadRecord<City>>>(jsonFromFile)
+
+// 3. Restore the engine instantly without recalculating mathematical vectors
+searchEngine.importFromSequence(deserializedRecords.asSequence())
 ```
+
 ## Real-World Typing Simulation: The "Cnada" Problem
 
 To truly understand the power of `typeahead-kmp`, let's look at a real-time keystroke simulation.

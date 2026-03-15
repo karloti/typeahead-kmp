@@ -22,6 +22,7 @@ import io.github.karloti.typeahead.TypeaheadSearchEngine
 import io.github.karloti.typeahead.renderHighlightedString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -75,11 +76,8 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testTypingSimulationWithScoreProgression() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>()
-
-        countries.forEach { searchEngine.add(it) }
         launch {
-            searchEngine.addAll(countries)
+            val searchEngine = TypeaheadSearchEngine(countries)
 
             val queryToType = "Cnada"
 
@@ -103,7 +101,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testUltimateThreadSafetyAndFuzzySearch() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+        val searchEngine = TypeaheadSearchEngine<String>()
 
         val baselineItems = (1..50).map { "item-baseline-$it" }
         val itemsToRemove = (1..500).map { "item-to-remove-$it" }
@@ -171,7 +169,7 @@ class TypeaheadSearchEngineTest {
             "getAllItems() should return exactly $expectedSize items."
         )
 
-        println("✅ Ultimate Thread-safety and Accuracy test passed perfectly!")
+        println("✅ Ultimate Thread-safety and Accuracy test passed perfectly! Expected items: $expectedSize")
     }
 
     @Test
@@ -390,7 +388,7 @@ class TypeaheadSearchEngineTest {
     fun `Verify single add under high concurrency works correctly and measure performance`() = runTest {
         val engine = TypeaheadSearchEngine<String>()
         val isJsOrWasm = true
-        val totalItems = if (isJsOrWasm) 1000 else 10_000
+        val totalItems = if (isJsOrWasm) 1000 else 50_000
         val items = (1..totalItems).map { "Product $it" }
 
         val time = measureTime {
@@ -403,18 +401,18 @@ class TypeaheadSearchEngineTest {
             jobs.joinAll() // Wait for all insertions to finish
         }
 
-        println("✅ Concurrent add() of $totalItems items took $time ms")
+        println("✅ Concurrent add() of $totalItems items took $time")
 
         // Assuming your engine has a way to check size, e.g., via a property or by exporting
         // Alternatively, you can do a search to verify items are present.
-        // assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after concurrent add")
+        assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after concurrent add")
     }
 
     @Test
     fun `Verify addAll processes items correctly and measure performance`() = runTest {
         val engine = TypeaheadSearchEngine<String>()
         val isJsOrWasm = true
-        val totalItems = if (isJsOrWasm) 1000 else 10_000
+        val totalItems = if (isJsOrWasm) 1000 else 50_000
         val items = (1..totalItems).map { "Product $it" }
 
         val time = measureTime {
@@ -422,8 +420,8 @@ class TypeaheadSearchEngineTest {
             engine.addAll(items)
         }
 
-        println("✅ addAll() of $totalItems items took $time ms")
+        println("✅ addAll() of $totalItems items took $time")
 
-        // assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after addAll")
+        assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after addAll")
     }
 }

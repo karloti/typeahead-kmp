@@ -51,14 +51,18 @@ class TypeaheadSearchEngineTestJava {
         val productCategories = listOf("Electronics", "Clothing", "Food", "Books", "Toys", "Sports", "Home", "Beauty")
         val productBrands = listOf("BrandA", "BrandB", "BrandC", "BrandD", "BrandE", "BrandF", "BrandG", "BrandH")
 
-        val products = List(targetSize) { index ->
-            Product(
-                id = index,
-                name = "Product_${countries[index % countries.size]}_Item_$index",
-                category = productCategories[index % productCategories.size],
-                brand = productBrands[index % productBrands.size],
-                price = (10.0 + (index % 1000) * 0.99)
-            )
+        val products: Sequence<Product> = sequence {
+            repeat(targetSize) { index ->
+                yield(
+                    Product(
+                        id = index,
+                        name = "Product_${countries[index % countries.size]}_Item_$index",
+                        category = productCategories[index % productCategories.size],
+                        brand = productBrands[index % productBrands.size],
+                        price = (10.0 + (index % 1000) * 0.99)
+                    )
+                )
+            }
         }
 
         val searchEngine = TypeaheadSearchEngine<Product> { product ->
@@ -177,7 +181,7 @@ class TypeaheadSearchEngineTestJava {
         val memoryBeforeImport = runtime.totalMemory() - runtime.freeMemory()
         val importStartTime = System.currentTimeMillis()
 
-        newSearchEngine.importFromSequence(deserializedRecords.asSequence(),)
+        newSearchEngine.importFromSequence(deserializedRecords.asSequence())
 
         val importEndTime = System.currentTimeMillis()
         val memoryAfterImport = runtime.totalMemory() - runtime.freeMemory()

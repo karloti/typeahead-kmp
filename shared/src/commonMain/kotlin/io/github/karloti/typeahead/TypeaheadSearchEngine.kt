@@ -18,6 +18,8 @@
 
 package io.github.karloti.typeahead
 
+import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.update
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.collections.immutable.toPersistentMap
@@ -62,7 +64,7 @@ class TypeaheadSearchEngine<T>(
 ) {
 
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
-    private val _embeddings = MutableStateFlow<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentMapOf())
+    private val _embeddings = atomic<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentMapOf())
 
     /**
      * Finds the top matching elements for the given query using Cosine Similarity.
@@ -154,24 +156,57 @@ class TypeaheadSearchEngine<T>(
      * CPU saturation on mobile devices without context-switching overhead.
      */
     suspend fun addAll(
+        items: Sequence<T>,
+        concurrencyLevel: Int = DEFAULT_CONCURRENCY
+    ) = addAll(items.asFlow(), concurrencyLevel)
+
+    /**
+     * Batches multiple elements into the search engine's spatial index concurrently.
+     * * This operation is heavily optimized for Edge devices and memory-constrained environments
+     * across all Kotlin Multiplatform targets. It strictly separates the heavy mathematical
+     * vectorization from the state mutation phase to prevent computational thrashing.
+     * * To avoid Coroutine Explosion (OOM errors) associated with unbounded [async] builders,
+     * this method utilizes [flatMapMerge] to achieve controlled, backpressured concurrency.
+     *
+     * @param items The collection of domain objects to be indexed.
+     * @param concurrencyLevel The maximum number of concurrent tokenization tasks.
+     * Defaults to [DEFAULT_CONCURRENCY] (typically 16), which provides excellent
+     * CPU saturation on mobile devices without context-switching overhead.
+     */
+    suspend fun addAll(
         items: Iterable<T>,
+        concurrencyLevel: Int = DEFAULT_CONCURRENCY
+    ) = addAll(items.asFlow(), concurrencyLevel)
+
+    /**
+     * Batches multiple elements into the search engine's spatial index concurrently.
+     * * This operation is heavily optimized for Edge devices and memory-constrained environments
+     * across all Kotlin Multiplatform targets. It strictly separates the heavy mathematical
+     * vectorization from the state mutation phase to prevent computational thrashing.
+     * * To avoid Coroutine Explosion (OOM errors) associated with unbounded [async] builders,
+     * this method utilizes [flatMapMerge] to achieve controlled, backpressured concurrency.
+     *
+     * @param items The collection of domain objects to be indexed.
+     * @param concurrencyLevel The maximum number of concurrent tokenization tasks.
+     * Defaults to [DEFAULT_CONCURRENCY] (typically 16), which provides excellent
+     * CPU saturation on mobile devices without context-switching overhead.
+     */
+    suspend fun addAll(
+        items: Flow<T>,
         concurrencyLevel: Int = DEFAULT_CONCURRENCY
     ) = withContext(defaultDispatcher) {
 
         val computedEntries = mutableMapOf<String, PersistentMap<T, SparseVector>>()
 
-        items
-            .asFlow()
-            .flatMapMerge(concurrency = concurrencyLevel) { item ->
-                flow {
-                    val string = textSelector(item)
-                    val embedding = string.toPositionalEmbedding()
-                    emit(string to (item to embedding))
-                }
+        items.flatMapMerge(concurrency = concurrencyLevel) { item ->
+            flow {
+                val string = textSelector(item)
+                val embedding = string.toPositionalEmbedding()
+                emit(string to (item to embedding))
             }
-            .collect { (stringKey, vectorPair) ->
-                computedEntries[stringKey] = persistentMapOf(vectorPair.first to vectorPair.second)
-            }
+        }.collect { (stringKey, vectorPair) ->
+            computedEntries[stringKey] = persistentMapOf(vectorPair.first to vectorPair.second)
+        }
 
         // 3. Perform a lightning-fast, atomic state update in O(1) time.
         _embeddings.update { currentMap ->
@@ -367,26 +402,115 @@ class TypeaheadSearchEngine<T>(
         internal const val EPSILON_FLOAT = 1e-7f
         internal const val TOLERANCE_FLOAT = 1e-6f
 
-    /**
-     * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
-     * populate it with an initial dataset.
-     *
-     * @param T The type of elements.
-     * @param items The initial dataset to index.
-     * @param defaultDispatcher The coroutine dispatcher for background tasks.
-     * @param ignoreCase Whether to ignore character casing during search.
-     * @param maxNgramSize The maximum size of N-grams to extract.
-     * @param anchorWeight The weight applied to the first character match.
-     * @param lengthWeight The weight applied to length similarity.
-     * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
-     * @param prefixWeight The weight for strict prefix matching.
-     * @param fuzzyWeight The weight for fuzzy prefix matching.
-     * @param skipWeight The weight for skip-gram matching.
-     * @param floatingWeight The weight for floating N-gram matching.
-     * @param textSelector Lambda to extract searchable text from the items.
-     */
-    suspend operator fun <T> invoke(
+        /**
+         * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
+         * populate it with an initial dataset.
+         *
+         * @param T The type of elements.
+         * @param items The initial dataset to index.
+         * @param defaultDispatcher The coroutine dispatcher for background tasks.
+         * @param ignoreCase Whether to ignore character casing during search.
+         * @param maxNgramSize The maximum size of N-grams to extract.
+         * @param anchorWeight The weight applied to the first character match.
+         * @param lengthWeight The weight applied to length similarity.
+         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
+         * @param prefixWeight The weight for strict prefix matching.
+         * @param fuzzyWeight The weight for fuzzy prefix matching.
+         * @param skipWeight The weight for skip-gram matching.
+         * @param floatingWeight The weight for floating N-gram matching.
+         * @param textSelector Lambda to extract searchable text from the items.
+         */
+        suspend operator fun <T> invoke(
             items: Iterable<T>,
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            ignoreCase: Boolean = true,
+            maxNgramSize: Int = 4,
+            anchorWeight: Float = 10.0f,
+            lengthWeight: Float = 8.0f,
+            gestaltWeight: Float = 15.0f,
+            prefixWeight: Float = 6.0f,
+            fuzzyWeight: Float = 5.0f,
+            skipWeight: Float = 4.0f,
+            floatingWeight: Float = 2.5f,
+            textSelector: (T) -> String = { it.toString() }
+        ) = TypeaheadSearchEngine(
+            defaultDispatcher = defaultDispatcher,
+            ignoreCase = ignoreCase,
+            maxNgramSize = maxNgramSize,
+            anchorWeight = anchorWeight,
+            lengthWeight = lengthWeight,
+            gestaltWeight = gestaltWeight,
+            prefixWeight = prefixWeight,
+            fuzzyWeight = fuzzyWeight,
+            skipWeight = skipWeight,
+            floatingWeight = floatingWeight,
+            textSelector = textSelector,
+        ).apply { addAll(items) }
+        /**
+         * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
+         * populate it with an initial dataset.
+         *
+         * @param T The type of elements.
+         * @param items The initial dataset to index.
+         * @param defaultDispatcher The coroutine dispatcher for background tasks.
+         * @param ignoreCase Whether to ignore character casing during search.
+         * @param maxNgramSize The maximum size of N-grams to extract.
+         * @param anchorWeight The weight applied to the first character match.
+         * @param lengthWeight The weight applied to length similarity.
+         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
+         * @param prefixWeight The weight for strict prefix matching.
+         * @param fuzzyWeight The weight for fuzzy prefix matching.
+         * @param skipWeight The weight for skip-gram matching.
+         * @param floatingWeight The weight for floating N-gram matching.
+         * @param textSelector Lambda to extract searchable text from the items.
+         */
+        suspend operator fun <T> invoke(
+            items: Flow<T>,
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            ignoreCase: Boolean = true,
+            maxNgramSize: Int = 4,
+            anchorWeight: Float = 10.0f,
+            lengthWeight: Float = 8.0f,
+            gestaltWeight: Float = 15.0f,
+            prefixWeight: Float = 6.0f,
+            fuzzyWeight: Float = 5.0f,
+            skipWeight: Float = 4.0f,
+            floatingWeight: Float = 2.5f,
+            textSelector: (T) -> String = { it.toString() }
+        ) = TypeaheadSearchEngine(
+            defaultDispatcher = defaultDispatcher,
+            ignoreCase = ignoreCase,
+            maxNgramSize = maxNgramSize,
+            anchorWeight = anchorWeight,
+            lengthWeight = lengthWeight,
+            gestaltWeight = gestaltWeight,
+            prefixWeight = prefixWeight,
+            fuzzyWeight = fuzzyWeight,
+            skipWeight = skipWeight,
+            floatingWeight = floatingWeight,
+            textSelector = textSelector,
+        ).apply { addAll(items) }
+
+        /**
+         * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
+         * populate it with an initial dataset.
+         *
+         * @param T The type of elements.
+         * @param items The initial dataset to index.
+         * @param defaultDispatcher The coroutine dispatcher for background tasks.
+         * @param ignoreCase Whether to ignore character casing during search.
+         * @param maxNgramSize The maximum size of N-grams to extract.
+         * @param anchorWeight The weight applied to the first character match.
+         * @param lengthWeight The weight applied to length similarity.
+         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
+         * @param prefixWeight The weight for strict prefix matching.
+         * @param fuzzyWeight The weight for fuzzy prefix matching.
+         * @param skipWeight The weight for skip-gram matching.
+         * @param floatingWeight The weight for floating N-gram matching.
+         * @param textSelector Lambda to extract searchable text from the items.
+         */
+        suspend operator fun <T> invoke(
+            items: Sequence<T>,
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
             ignoreCase: Boolean = true,
             maxNgramSize: Int = 4,
