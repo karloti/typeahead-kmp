@@ -42,6 +42,25 @@ kotlin {
 }
 ```
 
+## Supported Platforms
+
+![KMP Platforms](image_0fb9bd.png)
+
+`typeahead-kmp` is fully written in pure Kotlin with absolutely no platform-specific dependencies (like Foundation on iOS or java.util on JVM for its core logic). This allows it to be compiled and executed seamlessly across all major Kotlin Multiplatform targets:
+
+| Category | Platform | Supported KMP Targets |
+| :--- | :--- | :--- |
+| **Mobile** | Android | `androidTarget` |
+| **Mobile** | iOS | `iosX64`, `iosArm64`, `iosSimulatorArm64` |
+| **Desktop & Server** | JVM | `jvm` |
+| **Desktop & Server** | macOS | `macosX64`, `macosArm64` |
+| **Desktop & Server** | Linux | `linuxX64`, `linuxArm64` |
+| **Desktop & Server** | Windows | `mingwX64` |
+| **Web** | JavaScript | `js` (with IR compiler) |
+| **Web** | WebAssembly | `wasmJs` |
+
+Because the engine manages its own memory efficiently via primitive arrays and lock-free concurrency, you will get the exact same deterministic search results and blazing-fast performance regardless of the platform you compile for.
+
 ## Quick Start
 
 ### 1. Initialization and Indexing
