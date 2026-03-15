@@ -44,8 +44,6 @@ kotlin {
 
 ## Supported Platforms
 
-![KMP Platforms](image_0fb9bd.png)
-
 `typeahead-kmp` is fully written in pure Kotlin with absolutely no platform-specific dependencies (like Foundation on iOS or java.util on JVM for its core logic). This allows it to be compiled and executed seamlessly across all major Kotlin Multiplatform targets:
 
 | Category | Platform | Supported KMP Targets |
