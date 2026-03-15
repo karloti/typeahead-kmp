@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmDsl::class)
+@file:OptIn(ExperimentalWasmDsl::class, ExperimentalKotlinGradlePluginApi::class)
 @file:Suppress("UnstableApiUsage")
 
 import com.android.build.api.dsl.androidLibrary
+import org.codehaus.groovy.ast.tools.GeneralUtils.args
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -29,7 +31,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.5.0"
+val projectVersion = "1.5.1"
 version = projectVersion
 
 kotlin {
@@ -124,13 +126,14 @@ kotlin {
         }
 
         mingwX64Main.dependencies {
-            implementation("com.github.ajalt.mordant:mordant:3.0.2")
             implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
         }
 
         linuxX64Main.dependencies {
-            implementation("com.github.ajalt.mordant:mordant:3.0.2")
             implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
+        }
+        nativeMain.dependencies {
+            implementation("com.github.ajalt.mordant:mordant:3.0.2")
         }
     }
 }

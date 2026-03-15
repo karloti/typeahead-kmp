@@ -127,7 +127,10 @@ Imagine a user is trying to type **"Canada"**, but they accidentally type **"Cna
 Here is how the engine's internal mathematical weighting dynamically reacts at each keystroke in `O(1)` time:
 
 ### Step 1: Initial Input (L2 Normalization & Short-Word Bias)
-At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) anchor heavily restricts the search space. Because the input is extremely short, **L2 Normalization** naturally favors shorter words (Short-Word Bias). This brings 4-letter countries like `Cuba` and `Chad` to the top. By the second keystroke, `Canada` barely enters the top 5.
+
+At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) anchor heavily restricts the search
+space. Because the input is extremely short, **L2 Normalization** naturally favors shorter words (Short-Word Bias). This
+brings 4-letter countries like `Cuba` and `Chad` to the top. By the second keystroke, `Canada` barely enters the top 5.
 
 ```lua
 === Typing: 'C' with typing error of 'Cnada' ===
@@ -145,7 +148,11 @@ At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) a
 ```
 
 ### Step 2: Transposition Recovery (Fuzzy Prefix)
-The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Canada" entirely at this exact moment. Our **Fuzzy Prefix** dynamically anchors the first letter (`C`) and alphabetically sorts the remaining characters (`a`, `n`). Both the input `Cna` and the target `Can` generate the exact same spatial feature (`FPR_c_an`). `Canada` instantly rockets to the #1 spot!
+
+The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Canada" entirely at this exact moment. Our *
+*Fuzzy Prefix** dynamically anchors the first letter (`C`) and alphabetically sorts the remaining characters (`a`, `n`).
+Both the input `Cna` and the target `Can` generate the exact same spatial feature (`FPR_c_an`). `Canada` instantly
+rockets to the #1 spot!
 
 ```lua
 === Typing: 'Cna' with typing error of 'Cnada' ===
@@ -157,7 +164,11 @@ The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Cana
 ```
 
 ### Step 3: Spellchecker Takeover (Typoglycemia Gestalt)
-The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Spellchecker Mode" via the **Typoglycemia Gestalt Anchor**. It detects a 4-letter word starting with `C` and ending with `d`. The algorithm mathematically assumes the user is actively trying to spell `Chad` and applies a massive 15.0 spatial intersection multiplier to that specific vector, temporarily overtaking `Canada`.
+
+The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Spellchecker Mode" via the **Typoglycemia
+Gestalt Anchor**. It detects a 4-letter word starting with `C` and ending with `d`. The algorithm mathematically assumes
+the user is actively trying to spell `Chad` and applies a massive 15.0 spatial intersection multiplier to that specific
+vector, temporarily overtaking `Canada`.
 
 ```lua
 === Typing: 'Cnad' with typing error of 'Cnada' ===
@@ -169,7 +180,11 @@ The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Sp
 ```
 
 ### Step 4: Final Resolution (Skip-Grams & N-Grams)
-The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) completely breaks. The engine reverts to deep structural analysis. Overlapping Skip-Grams seamlessly bridge the transposed letters (`C-n-a-d-a`). This structural skeleton perfectly aligns with the core features of `Canada`, accumulating a massive dot-product score that completely overcomes the length penalty. `Canada` firmly reclaims the #1 spot!
+
+The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) completely breaks. The engine reverts to
+deep structural analysis. Overlapping Skip-Grams seamlessly bridge the transposed letters (`C-n-a-d-a`). This structural
+skeleton perfectly aligns with the core features of `Canada`, accumulating a massive dot-product score that completely
+overcomes the length penalty. `Canada` firmly reclaims the #1 spot!
 
 ```lua
 === Typing: 'Cnada' with typing error of 'Cnada' ===
@@ -180,12 +195,46 @@ The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) comp
 5. Chile - Score: 0.047217139821755294
 ```
 
-**This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all happening in `O(1)` time without memory allocations—is what makes `typeahead-kmp` uniquely powerful for human-driven inputs.**
+**This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence
+momentum—all happening in `O(1)` time without memory allocations—is what makes `typeahead-kmp` uniquely powerful for
+human-driven inputs.**
 
 ![Real-World Typing Simulation: The "Cnada" Problem](assets/cnada-problem.gif)
 
 _This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all
 happening without memory allocations—is what makes this engine uniquely powerful._
+
+## Beyond UI: CLI Fuzzy File Finder
+
+While `typeahead-kmp` is heavily optimized for real-time mobile and web UIs, its underlying L2-normalized sparse vector
+engine is highly versatile and can be applied to backend utilities and Command Line Interfaces (CLIs).
+
+Included in the repository is a practical example of a **CLI Fuzzy File Search**. When navigating deeply nested
+directory structures, it is incredibly common to mistype a filename. Instead of a frustrating "File not found" error,
+this tool leverages the typeahead engine to act as a resilient safety net, instantly suggesting the closest possible
+matches.
+
+![CLI Search Example](assets/findme.png)
+
+### How It Works
+
+1. **Recursive Indexing**: The script recursively traverses the local file system (skipping hidden directories like
+   `.git`), feeding file names into the `TypeaheadSearchEngine` while storing their absolute paths as the associated
+   payload.
+2. **Intelligent Fallback**: The CLI first checks for an exact match. If the user makes a typo (e.g., typing `Typeahed`
+   instead of `Typeahead`), the exact search fails, and the engine immediately falls back to its vector space search to
+   find the nearest neighbors.
+3. **Visual Heatmap Highlighting**: This example showcases the true power of the engine's `findWithHighlights()` API.
+   Instead of just returning a score, the engine returns an `IntArray` spatial heatmap for each match. The CLI uses this
+   data to render color-coded terminal output:
+
+* 🟩 **Solid Prefix**: Exact starting matches.
+* 🟨 **Floating N-Gram**: Contiguous blocks of characters found in the middle of the word.
+* 🟦 **Skip-Gram**: Scattered, individual character matches (the "fuzzy bridge").
+* ⬜ **Unmatched**: Characters that were skipped or mistyped.
+
+This demonstrates how the internal scoring mechanism can be directly piped into UI rendering logic—whether that's a
+terminal output or styled text in Jetpack Compose / SwiftUI.
 
 ## The Evolution: Why standard algorithms fail
 
@@ -198,32 +247,85 @@ While engines like **Algolia** and **Typesense** are industry standards for mass
 requests. In mobile or web front-ends, **network latency kills the instant "typeahead" feel**. `typeahead-kmp` brings
 vector-search intelligence directly to the client.
 
-## The Problem with Traditional Algorithms & Math
-Building a perfect typeahead engine requires balancing real-time UI performance with human typing psychology. During the development of this library, we evaluated, implemented, and ultimately discarded several standard algorithmic approaches because they fundamentally misalign with the constraints of mobile environments or human behavior.
+## The Problem with Traditional Algorithms
 
-- **Levenshtein Distance & Edit-Distance Math**: Traditional fuzzy search algorithms operate with `O(N*M)` time complexity. Running this across thousands of records on every single keystroke quickly blocks the Main UI thread on mobile devices, causing frame drops and stuttering. Furthermore, they heavily penalize length and fail at "Blind Continuation" (where an early typo derails the entire score).
+Building a perfect typeahead engine requires balancing real-time UI performance with human typing psychology. During the
+development of this library, we evaluated, implemented, and ultimately discarded several standard algorithmic approaches
+because they fundamentally misalign with the constraints of mobile environments (60fps UI rendering, memory
+fragmentation, Garbage Collection pauses) or human behavior.
 
-- **Weighted Longest Common Subsequence (LCS)**: While applying index-based positional weights to an LCS algorithm improves accuracy for scattered keystrokes, it still suffers from the same `O(N*M)` CPU bottleneck and requires complex backtracking that is too slow for 60fps keystroke rendering.
+- **Strict Prefix Tries / Radix Trees**: Extremely fast (`O(L)` where L is query length) and highly memory-efficient.
+  However, they offer absolutely zero typo tolerance. A single transposed or missed character instantly shatters the
+  search path, frustrating users who type quickly on glass screens.
 
-- **Strict Prefix Tries / Radix Trees**: Extremely fast (`O(L)` where L is query length) and memory-efficient, but offer absolutely zero typo tolerance. A single transposed character instantly shatters the search tree.
+- **Levenshtein & Damerau-Levenshtein Distance**: The industry standard for spelling correction. Unfortunately, these
+  operate with `O(N*M)` time complexity via dynamic programming matrices. Running this math across thousands of records
+  on every single keystroke quickly blocks the Main UI thread on mobile devices, causing frame drops and stuttering.
+  Furthermore, they heavily penalize string length differences and fail completely at the "Blind Continuation"
+  phenomenon (where an early typo derails the entire score, even if the rest of the word is typed perfectly).
 
-- **In-Memory Dense Vector Databases**: Using traditional dense embeddings (like standard AI vector DBs) provides excellent fuzzy matching, but the memory footprint is massive. Furthermore, inserting and updating full dense vectors is computationally expensive and slow, making them overkill for syntactic typeahead.
+- **Jaro-Winkler Similarity**: Specifically designed to give heavy weight to matching prefixes, making it seemingly
+  ideal for autocomplete. However, it still suffers from `O(N*M)` CPU bottlenecks. More importantly, its strict prefix
+  anchor means that if the user makes a mistake in the very first or second character, the similarity score degrades
+  drastically, destroying the typeahead experience.
 
-`typeahead-kmp` solves this by bridging the gap. By mathematically tokenizing strings into **L2-normalized sparse vectors** upfront (using parallel primitive arrays), it acts as a highly optimized, local feature-store. At search time, it uses a linear `O(K)` two-pointer dot-product intersection. This completely bypasses heavy floating-point divisions and recursive matrix calculations during the critical search loop, delivering `O(1)` relative lookup performance with a fraction of the memory overhead.
+- **Weighted Longest Common Subsequence (LCS)**: While applying index-based positional weights to an LCS algorithm
+  improves accuracy for scattered keystrokes and dropped characters, it still requires complex matrix backtracking. This
+  mathematical overhead is simply too slow for asynchronous, per-keystroke rendering.
+
+- **Standard N-Grams & Jaccard / Cosine Sets**: Breaking strings into overlapping chunks (N-grams) solves the typo and
+  transposition problems beautifully. However, traditional implementations rely heavily on creating massive amounts of
+  intermediate `String` objects or `Set` collections. On mobile (JVM/ART or Kotlin Native), this triggers aggressive
+  Garbage Collection (GC) pauses, leading to UI jitter. Additionally, standard sets treat words as bags-of-tokens,
+  completely losing the critical "Prefix Anchor" (the fact that the beginning of a word matters more than the end).
+
+- **Ratcliff-Obershelp & SIFT4**: While experimental algorithms like SIFT4 simulate human perception and operate in
+  linear time (`O(max(N,M))`), they lack the structural optimizations required for concurrent environments. They don't
+  natively integrate with lock-free data structures, making them difficult to scale across highly concurrent
+  reader/writer coroutines without blocking.
+
+- **In-Memory Dense Vector Databases**: Using traditional dense embeddings (like standard AI vector DBs) provides
+  excellent semantic and fuzzy matching (`O(log N)` search times). However, the memory footprint is massive. Inserting,
+  updating, and holding full dense vectors in RAM is computationally expensive and battery-draining, making them
+  absolute overkill for purely syntactic typeahead.
+
+### The Solution: Typeahead KMP
+
+To solve these compounding issues, `typeahead-kmp` abandons traditional string-to-string comparisons during the search
+phase.
+
+Instead, it functions as a highly specialized, local vector database:
+
+1. **Zero-Allocation Math**: We use an **L2-Normalized Sparse Vector Space**. Vectors are represented by parallel,
+   primitive `FloatArray` structures, strictly halving memory footprints and completely eliminating object fragmentation
+   and GC pauses.
+2. **`O(K)` Search Complexity**: Because vectors are pre-computed and alphabetically sorted, the core search reduces to
+   an ultra-fast, two-pointer dot-product intersection.
+3. **Lock-Free Concurrency**: Utilizing immutable state (`PersistentMap`) and atomic Compare-And-Swap (CAS) operations
+   via a custom `BoundedConcurrentPriorityQueue`, the engine handles thousands of parallel reads and writes without ever
+   locking a thread.
+4. **Human-Centric Scoring**: By combining positional weighting (P0 Anchors) with N-gram tokenization, the engine
+   seamlessly handles typos, transpositions, and the "Blind Continuation" effect, dynamically yielding a precise Cosine
+   Similarity score (`0.0` to `1.0`) in milliseconds.
 
 ## Algorithm Comparison
 
-| Algorithm | Typo Tolerance | Prefix Anchor | Memory Cost | Blind Continuation | Search Complexity |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Strict Prefix Tries** | ❌ None | ✅ Perfect | ✅ Low | ❌ Fails | `O(L)` |
-| **Levenshtein Distance** | ✅ Good | ❌ Poor | ✅ Low | ❌ Poor | `O(N*M)` |
-| **Weighted LCS** | ✅ Good | ⚠️ Moderate | ⚠️ Medium | ⚠️ Moderate | `O(N*M)` |
-| **Dense Vector DBs** | ✅ Excellent | ❌ Poor | ❌ Massive | ✅ Excellent | `O(log N)` |
-| **Standard N-Grams** | ✅ Good | ❌ Poor | ⚠️ High | ✅ Good | `O(1)` |
-| **Typeahead KMP (Ours)**| **✅ Excellent**| **✅ Excellent** | **✅ Low (Sparse)**| **✅ Excellent** | **`O(K)` ~ `O(1)`** |
+| Algorithm                            | Typo Tolerance  |  Prefix Anchor  |    Memory Cost     | Blind Continuation |  Search Complexity  |
+|:-------------------------------------|:---------------:|:---------------:|:------------------:|:------------------:|:-------------------:|
+| **Strict Prefix Tries**              |     ❌ None      |    ✅ Perfect    |       ✅ Low        |      ❌ Fails       |       `O(L)`        |
+| **Levenshtein Distance**             |     ✅ Good      |     ❌ Poor      |       ✅ Low        |       ❌ Poor       |      `O(N*M)`       |
+| **Weighted & Damerau-Levenshtein**   |   ✅ Excellent   |     ❌ Poor      |     ⚠️ Medium      |       ❌ Poor       |      `O(N*M)`       |
+| **Jaro-Winkler**                     |     ✅ Good      |   ✅ Excellent   |       ✅ Low        |       ❌ Poor       |      `O(N*M)`       |
+| **Longest Common Subsequence (LCS)** |     ✅ Good      |   ⚠️ Moderate   |     ⚠️ Medium      |    ⚠️ Moderate     |      `O(N*M)`       |
+| **Standard N-Grams & Q-Grams**       |     ✅ Good      |     ❌ Poor      |      ⚠️ High       |       ✅ Good       |      `O(N+M)`       |
+| **Cosine / Jaccard / Dice (Sets)**   |     ✅ Good      |     ❌ Poor      |      ⚠️ High       |       ✅ Good       |      `O(N+M)`       |
+| **Ratcliff-Obershelp**               |   ⚠️ Moderate   |     ❌ Poor      |     ⚠️ Medium      |    ⚠️ Moderate     | `O(N³)` ~ `O(N*M)`  |
+| **SIFT4 (Experimental)**             |   ✅ Excellent   |   ⚠️ Moderate   |       ✅ Low        |       ✅ Good       |    `O(max(N,M))`    |
+| **Dense Vector DBs**                 |   ✅ Excellent   |     ❌ Poor      |     ❌ Massive      |    ✅ Excellent     |     `O(log N)`      |
+| **Typeahead KMP (Ours)**             | **✅ Excellent** | **✅ Excellent** | **✅ Low (Sparse)** |  **✅ Excellent**   | **`O(K)` ~ `O(1)`** |
 
-
-_(Note: K represents the number of non-zero overlapping features, which is strictly bounded by the string length, rendering the search time effectively O(1) relative to the total dataset size)._
+_(Note: K represents the number of non-zero overlapping features, which is strictly bounded by the string length,
+rendering the search time effectively O(1) relative to the total dataset size)._
 
 ---
 
@@ -243,9 +345,12 @@ The engine is engineered for environments with strict memory and CPU constraints
 
 ## Performance, Memory & Cold-Start Elimination
 
-To demonstrate the engine's efficiency under heavy loads, we run an aggressive benchmark indexing **10,000 complex product records** (resulting in an 84 MB JSON export).
+To demonstrate the engine's efficiency under heavy loads, we run an aggressive benchmark indexing **10,000 complex
+product records** (resulting in an 84 MB JSON export).
 
-Because string tokenization and mathematical L2-normalization are computationally heavy, the initial insertion takes some CPU time and memory. However, **importing pre-computed vectors bypasses all mathematical operations**, resulting in a near-instant cold-start with virtually zero memory bloat.
+Because string tokenization and mathematical L2-normalization are computationally heavy, the initial insertion takes
+some CPU time and memory. However, **importing pre-computed vectors bypasses all mathematical operations**, resulting in
+a near-instant cold-start with virtually zero memory bloat.
 
 ## Benchmark Output (JVM):
 
@@ -265,18 +370,24 @@ Total Time:       1520 ms
 ================================================================================
 ✅ Import verification completed successfully - all results are identical!
 ```
+
 ### Key Takeaways:
 
-- **Zero-Cost Reads**: Exporting the current state takes only `7 ms` because the internal `PersistentMap` allows instant iteration without locking the data structure.
+- **Zero-Cost Reads**: Exporting the current state takes only `7 ms` because the internal `PersistentMap` allows instant
+  iteration without locking the data structure.
 
-- **Lightning-Fast Hydration**: Restoring 10,000 records takes only `9 ms` and `5 MB` of RAM. By generating the JSON index on your backend or during CI/CD, you can ship it to mobile clients for instant search availability on app launch.
+- **Lightning-Fast Hydration**: Restoring 10,000 records takes only `9 ms` and `5 MB` of RAM. By generating the JSON
+  index on your backend or during CI/CD, you can ship it to mobile clients for instant search availability on app
+  launch.
 
 ---
 
 ## Tracking & Roadmap
+
 We use YouTrack for task management and issue tracking.
 You can view the current tasks and progress here:
 [Typeahead KMP Issues & Roadmap](https://smartcoding.youtrack.cloud/projects/typeahead_kmp)
 
 ## License
+
 This project is licensed under the **Apache License Version 2.0** - see the [LICENSE](LICENSE) file for details.
