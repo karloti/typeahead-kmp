@@ -106,16 +106,70 @@ val sequenceOfRecords = File("vectors.json").useLines { lines ->
 }
 searchEngine.importFromSequence(sequenceOfRecords)
 ```
-
 ## Real-World Typing Simulation: The "Cnada" Problem
 
-To truly understand the power of `typeahead-kmp`, let's look at a real-time keystroke simulation. Imagine a user is
-trying to type "Canada", but they accidentally type "Cnada" (a classic transposition error).
+To truly understand the power of `typeahead-kmp`, let's look at a real-time keystroke simulation.
+Imagine a user is trying to type **"Canada"**, but they accidentally type **"Cnada"** (a classic transposition error).
 
-Strict prefix-trees would drop the search result immediately at the second keystroke. Watch how our internal
-mathematical weighting dynamically reacts, recovers, and pushes "Canada" back to the #1 spot in `O(1)` time:
+Here is how the engine's internal mathematical weighting dynamically reacts at each keystroke in `O(1)` time:
 
-![cnada-problem](assets/cnada-problem.gif)
+### Step 1: Initial Input (L2 Normalization & Short-Word Bias)
+At this early stage, the user types `C` and then `Cn`. The `P0` (First Letter) anchor heavily restricts the search space. Because the input is extremely short, **L2 Normalization** naturally favors shorter words (Short-Word Bias). This brings 4-letter countries like `Cuba` and `Chad` to the top. By the second keystroke, `Canada` barely enters the top 5.
+
+```lua
+=== Typing: 'C' with typing error of 'Cnada' ===
+1. Cuba - Score: 0.19181583900475285
+2. Chad - Score: 0.19181583900475285
+3. China - Score: 0.14776063566992276
+4. Chile - Score: 0.14776063566992276
+5. Cyprus - Score: 0.11811359847672041
+
+=== Typing: 'Cn' with typing error of 'Cnada' ===
+1. Cuba - Score: 0.10297213760008117
+2. Chad - Score: 0.10297213760008117
+...
+5. Canada - Score: 0.07255630308706752
+```
+
+### Step 2: Transposition Recovery (Fuzzy Prefix)
+The user meant `Can` but typed `Cna`. A strict-prefix algorithm would drop "Canada" entirely at this exact moment. Our **Fuzzy Prefix** dynamically anchors the first letter (`C`) and alphabetically sorts the remaining characters (`a`, `n`). Both the input `Cna` and the target `Can` generate the exact same spatial feature (`FPR_c_an`). `Canada` instantly rockets to the #1 spot!
+
+```lua
+=== Typing: 'Cna' with typing error of 'Cnada' ===
+1. Canada - Score: 0.14257617990546595 <-- Rockets to #1 via Fuzzy Prefix intersection!
+2. Chad - Score: 0.08281542504942256
+3. Cuba - Score: 0.07409801188632545
+4. China - Score: 0.06757216102651037
+5. Chile - Score: 0.05707958943854292
+```
+
+### Step 3: Spellchecker Takeover (Typoglycemia Gestalt)
+The user types `d`. The engine momentarily switches from "Typeahead Mode" to "Spellchecker Mode" via the **Typoglycemia Gestalt Anchor**. It detects a 4-letter word starting with `C` and ending with `d`. The algorithm mathematically assumes the user is actively trying to spell `Chad` and applies a massive 15.0 spatial intersection multiplier to that specific vector, temporarily overtaking `Canada`.
+
+```lua
+=== Typing: 'Cnad' with typing error of 'Cnada' ===
+1. Chad - Score: 0.1853988462303561 <-- Massive spike due to Gestalt anchor (C...d)!
+2. Canada - Score: 0.1278792484954006
+3. Cuba - Score: 0.07957032027053908
+4. China - Score: 0.04934251382749997
+5. Chile - Score: 0.04168063279838507
+```
+
+### Step 4: Final Resolution (Skip-Grams & N-Grams)
+The final `a` is typed (length 5). The Gestalt anchor for `Chad` (length 4) completely breaks. The engine reverts to deep structural analysis. Overlapping Skip-Grams seamlessly bridge the transposed letters (`C-n-a-d-a`). This structural skeleton perfectly aligns with the core features of `Canada`, accumulating a massive dot-product score that completely overcomes the length penalty. `Canada` firmly reclaims the #1 spot!
+
+```lua
+=== Typing: 'Cnada' with typing error of 'Cnada' ===
+1. Canada - Score: 0.2563201621199545 <-- Reclaims the lead via deep structural sequence momentum!
+2. China - Score: 0.10623856459894943
+3. Chad - Score: 0.05424611768613351
+4. Grenada - Score: 0.04955129623022677
+5. Chile - Score: 0.047217139821755294
+```
+
+**This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all happening in `O(1)` time without memory allocations—is what makes `typeahead-kmp` uniquely powerful for human-driven inputs.**
+
+![Real-World Typing Simulation: The "Cnada" Problem](assets/cnada-problem.gif)
 
 _This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all
 happening without memory allocations—is what makes this engine uniquely powerful._

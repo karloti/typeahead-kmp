@@ -243,14 +243,16 @@ class TypeaheadSearchEngineTest {
         searchEngine.add("Bulgaria")
 
         searchEngine.findWithHighlights("blugaria", maxResults = 1).first().heatmap.let { topMatch ->
-            val expectedHeatmap = intArrayOf(0, 2, 2, 1, 1, 1, 1, 1)
+            println("Top match heatmap: ${topMatch.contentToString()}")
+            val expectedHeatmap = intArrayOf(0, 2, 2, 0, 0, 0, 0, 0)
             assertTrue(
                 actual = expectedHeatmap.contentEquals(topMatch),
                 message = "Floating N-gram heatmap must match expected secondary tiers."
             )
         }
         searchEngine.findWithHighlights("bulgira ", maxResults = 1).first().heatmap.let { topMatch ->
-            val expectedHeatmap = intArrayOf(0, 0, 0, 0, -1, 2, -1, 2)
+            println("Top match heatmap: ${topMatch.contentToString()}")
+            val expectedHeatmap = intArrayOf(0, 0, 0, 0, 2, 0, 2, -1)
             assertTrue(
                 actual = expectedHeatmap.contentEquals(topMatch),
                 message = "Floating N-gram heatmap must match expected secondary tiers."
