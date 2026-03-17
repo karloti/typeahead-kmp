@@ -37,6 +37,7 @@ import kotlin.math.sqrt
  * It behaves like a mutable concurrent collection, allowing you to add, remove, and find elements.
  *
  * @param T The type of elements held in this engine.
+ * @param K The type of unique key used to identify each element.
  * @param defaultDispatcher The coroutine dispatcher used for heavy computational vectorization. Defaults to [Dispatchers.Default].
  * @param ignoreCase Whether to ignore character casing during search and tokenization. Defaults to `true`.
  * @param maxNgramSize The maximum size of N-grams to extract for floating positional matching. Defaults to 4.
@@ -48,19 +49,21 @@ import kotlin.math.sqrt
  * @param skipWeight The weight for skip-gram matching (insertion/deletion tolerant). Defaults to 4.0.
  * @param floatingWeight The weight for floating N-gram matching. Defaults to 2.5.
  * @param textSelector A lambda function that extracts the searchable textual representation from your object [T]. Defaults to `toString()`.
+ * @param uniqueKeySelector A lambda function that extracts a unique key for each element [T]. Defaults to `it`.
  */
-class TypeaheadSearchEngine<T>(
+class TypeaheadSearchEngine<T, K>(
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    private val ignoreCase: Boolean = true,
-    private val maxNgramSize: Int = 4,
-    private val anchorWeight: Float = 10.0f,
-    private val lengthWeight: Float = 8.0f,
-    private val gestaltWeight: Float = 15.0f,
-    private val prefixWeight: Float = 6.0f,
-    private val fuzzyWeight: Float = 5.0f,
-    private val skipWeight: Float = 4.0f,
-    private val floatingWeight: Float = 2.5f,
-    private val textSelector: (T) -> String = { it.toString() }
+    private val ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
+    private val maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
+    private val anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
+    private val lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
+    private val gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
+    private val prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
+    private val fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
+    private val skipWeight: Float = DEFAULT_SKIP_WEIGHT,
+    private val floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+    private val textSelector: (T) -> String = { it.toString() },
+    private val uniqueKeySelector: (T) -> K,
 ) {
 
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
@@ -75,17 +78,17 @@ class TypeaheadSearchEngine<T>(
      * @param maxResults The maximum number of top results to return. Defaults to 5.
      * @return A sorted list of pairs containing the matched object and its similarity score [0.0 - 1.0].
      */
-    suspend fun find(query: String, maxResults: Int = 5): List<Pair<T, Float>> {
+    suspend fun find(query: String, maxResults: Int = DEFAULT_MAX_RESULTS): List<Pair<T, Float>> {
         if (query.isBlank()) return emptyList()
 
         return withContext(defaultDispatcher) {
             val queryVector = query.toPositionalEmbedding()
 
-            val topResultsQueue = BoundedConcurrentPriorityQueue<Pair<T, Float>>(
+            val topResultsQueue = BoundedConcurrentPriorityQueue<Pair<T, Float>, K>(
                 maxSize = maxResults,
-                comparator = compareByDescending { it.second }
+                priorityComparator = compareByDescending { it.second },
+                uniqueKeySelector = { uniqueKeySelector(it.first) }
             )
-
             _embeddings.value.values.forEach { entries ->
                 entries.forEach { (item, targetVector) ->
                     val score = queryVector dotProduct targetVector
@@ -107,7 +110,7 @@ class TypeaheadSearchEngine<T>(
      * @param maxResults The maximum number of top results to return. Defaults to 5.
      * @return A list of [HighlightedMatch] containing the item, its similarity score, and a visual heatmap array.
      */
-    suspend fun findWithHighlights(query: String, maxResults: Int = 5): List<HighlightedMatch<T>> {
+    suspend fun findWithHighlights(query: String, maxResults: Int = DEFAULT_MAX_RESULTS): List<HighlightedMatch<T>> {
         val results = find(query, maxResults)
         return results.map { match ->
             val targetText = textSelector(match.first)
@@ -402,38 +405,87 @@ class TypeaheadSearchEngine<T>(
         internal const val EPSILON_FLOAT = 1e-7f
         internal const val TOLERANCE_FLOAT = 1e-6f
 
+        const val DEFAULT_CONCURRENCY = 16
+        const val DEFAULT_IGNORE_CASE = true
+        const val DEFAULT_MAX_NGRAM_SIZE = 4
+        const val DEFAULT_ANCHOR_WEIGHT = 10.0f
+        const val DEFAULT_LENGTH_WEIGHT = 8.0f
+        const val DEFAULT_GESTALT_WEIGHT = 15.0f
+        const val DEFAULT_PREFIX_WEIGHT = 6.0f
+        const val DEFAULT_FUZZY_WEIGHT = 5.0f
+        const val DEFAULT_SKIP_WEIGHT = 4.0f
+        const val DEFAULT_FLOATING_WEIGHT = 2.5f
+        const val DEFAULT_MAX_RESULTS = 5
+
         /**
-         * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
-         * populate it with an initial dataset.
+         * Creates a [TypeaheadSearchEngine] providing full control over the element type,
+         * its textual representation, and its unique identity key, initialized from an [Iterable].
          *
-         * @param T The type of elements.
-         * @param items The initial dataset to index.
-         * @param defaultDispatcher The coroutine dispatcher for background tasks.
-         * @param ignoreCase Whether to ignore character casing during search.
-         * @param maxNgramSize The maximum size of N-grams to extract.
-         * @param anchorWeight The weight applied to the first character match.
+         * @param items Initial elements to populate the engine. Defaults to an empty list.
+         * @param defaultDispatcher The coroutine dispatcher used for background processing.
+         * @param ignoreCase Whether the search should be case-insensitive.
+         * @param maxNgramSize The maximum size of N-grams to generate for fuzzy matching.
+         * @param anchorWeight The weight applied to exact anchor matches.
          * @param lengthWeight The weight applied to length similarity.
          * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
          * @param prefixWeight The weight for strict prefix matching.
          * @param fuzzyWeight The weight for fuzzy prefix matching.
          * @param skipWeight The weight for skip-gram matching.
          * @param floatingWeight The weight for floating N-gram matching.
-         * @param textSelector Lambda to extract searchable text from the items.
+         * @param textSelector A lambda function that converts an element [T] into a searchable string.
+         * @param uniqueKeySelector A lambda function that extracts a unique identity key from an element [T].
+         */
+        suspend operator fun <T, K> invoke(
+            items: Iterable<T> = emptyList(),
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
+            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
+            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
+            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
+            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
+            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
+            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
+            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
+            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+            textSelector: (T) -> String,
+            uniqueKeySelector: (T) -> K
+        ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
+            defaultDispatcher = defaultDispatcher,
+            ignoreCase = ignoreCase,
+            maxNgramSize = maxNgramSize,
+            anchorWeight = anchorWeight,
+            lengthWeight = lengthWeight,
+            gestaltWeight = gestaltWeight,
+            prefixWeight = prefixWeight,
+            fuzzyWeight = fuzzyWeight,
+            skipWeight = skipWeight,
+            floatingWeight = floatingWeight,
+            uniqueKeySelector = uniqueKeySelector,
+            textSelector = textSelector
+        ).apply { addAll(items) }
+
+        /**
+         * Creates a [TypeaheadSearchEngine] where the elements themselves act as their own unique identity keys,
+         * initialized from an [Iterable].
+         *
+         * @param items Initial elements to populate the engine. Defaults to an empty list.
+         * @param textSelector A lambda function that converts an element [T] into a searchable string. Defaults to calling `toString()`.
          */
         suspend operator fun <T> invoke(
-            items: Iterable<T>,
+            items: Iterable<T> = emptyList(),
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = true,
-            maxNgramSize: Int = 4,
-            anchorWeight: Float = 10.0f,
-            lengthWeight: Float = 8.0f,
-            gestaltWeight: Float = 15.0f,
-            prefixWeight: Float = 6.0f,
-            fuzzyWeight: Float = 5.0f,
-            skipWeight: Float = 4.0f,
-            floatingWeight: Float = 2.5f,
+            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
+            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
+            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
+            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
+            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
+            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
+            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
+            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
+            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
             textSelector: (T) -> String = { it.toString() }
-        ) = TypeaheadSearchEngine(
+        ): TypeaheadSearchEngine<T, T> = invoke(
+            items = items,
             defaultDispatcher = defaultDispatcher,
             ignoreCase = ignoreCase,
             maxNgramSize = maxNgramSize,
@@ -445,13 +497,14 @@ class TypeaheadSearchEngine<T>(
             skipWeight = skipWeight,
             floatingWeight = floatingWeight,
             textSelector = textSelector,
-        ).apply { addAll(items) }
+            uniqueKeySelector = { it }
+        )
+
         /**
-         * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
-         * populate it with an initial dataset.
+         * Creates a [TypeaheadSearchEngine] providing full control over the element type,
+         * its textual representation, and its unique identity key, asynchronously initialized from a [Flow].
          *
-         * @param T The type of elements.
-         * @param items The initial dataset to index.
+         * @param items A stream of initial elements to populate the engine concurrently.
          * @param defaultDispatcher The coroutine dispatcher for background tasks.
          * @param ignoreCase Whether to ignore character casing during search.
          * @param maxNgramSize The maximum size of N-grams to extract.
@@ -463,21 +516,69 @@ class TypeaheadSearchEngine<T>(
          * @param skipWeight The weight for skip-gram matching.
          * @param floatingWeight The weight for floating N-gram matching.
          * @param textSelector Lambda to extract searchable text from the items.
+         * @param uniqueKeySelector A lambda function that extracts a unique identity key from an element [T].
+         */
+        suspend operator fun <T, K> invoke(
+            items: Flow<T>,
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
+            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
+            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
+            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
+            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
+            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
+            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
+            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
+            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+            textSelector: (T) -> String,
+            uniqueKeySelector: (T) -> K
+        ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
+            defaultDispatcher = defaultDispatcher,
+            ignoreCase = ignoreCase,
+            maxNgramSize = maxNgramSize,
+            anchorWeight = anchorWeight,
+            lengthWeight = lengthWeight,
+            gestaltWeight = gestaltWeight,
+            prefixWeight = prefixWeight,
+            fuzzyWeight = fuzzyWeight,
+            skipWeight = skipWeight,
+            floatingWeight = floatingWeight,
+            uniqueKeySelector = uniqueKeySelector,
+            textSelector = textSelector,
+        ).apply { addAll(items) }
+
+        /**
+         * Creates a [TypeaheadSearchEngine] where the elements themselves act as their own unique identity keys,
+         * asynchronously initialized from a [Flow].
+         *
+         * @param items A stream of initial elements to populate the engine concurrently.
+         * @param defaultDispatcher The coroutine dispatcher for background tasks.
+         * @param ignoreCase Whether to ignore character casing during search.
+         * @param maxNgramSize The maximum size of N-grams to extract.
+         * @param anchorWeight The weight applied to the first character match.
+         * @param lengthWeight The weight applied to length similarity.
+         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
+         * @param prefixWeight The weight for strict prefix matching.
+         * @param fuzzyWeight The weight for fuzzy prefix matching.
+         * @param skipWeight The weight for skip-gram matching.
+         * @param floatingWeight The weight for floating N-gram matching.
+         * @param textSelector Lambda to extract searchable text from the items. Defaults to calling `toString()`.
          */
         suspend operator fun <T> invoke(
             items: Flow<T>,
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = true,
-            maxNgramSize: Int = 4,
-            anchorWeight: Float = 10.0f,
-            lengthWeight: Float = 8.0f,
-            gestaltWeight: Float = 15.0f,
-            prefixWeight: Float = 6.0f,
-            fuzzyWeight: Float = 5.0f,
-            skipWeight: Float = 4.0f,
-            floatingWeight: Float = 2.5f,
+            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
+            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
+            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
+            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
+            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
+            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
+            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
+            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
+            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
             textSelector: (T) -> String = { it.toString() }
-        ) = TypeaheadSearchEngine(
+        ): TypeaheadSearchEngine<T, T> = invoke(
+            items = items,
             defaultDispatcher = defaultDispatcher,
             ignoreCase = ignoreCase,
             maxNgramSize = maxNgramSize,
@@ -489,187 +590,26 @@ class TypeaheadSearchEngine<T>(
             skipWeight = skipWeight,
             floatingWeight = floatingWeight,
             textSelector = textSelector,
-        ).apply { addAll(items) }
+            uniqueKeySelector = { it }
+        )
 
         /**
          * Factory function to instantiate a [TypeaheadSearchEngine] and immediately
          * populate it with an initial dataset.
          *
-         * @param T The type of elements.
          * @param items The initial dataset to index.
-         * @param defaultDispatcher The coroutine dispatcher for background tasks.
-         * @param ignoreCase Whether to ignore character casing during search.
-         * @param maxNgramSize The maximum size of N-grams to extract.
-         * @param anchorWeight The weight applied to the first character match.
-         * @param lengthWeight The weight applied to length similarity.
-         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
-         * @param prefixWeight The weight for strict prefix matching.
-         * @param fuzzyWeight The weight for fuzzy prefix matching.
-         * @param skipWeight The weight for skip-gram matching.
-         * @param floatingWeight The weight for floating N-gram matching.
-         * @param textSelector Lambda to extract searchable text from the items.
+         * @param textSelector Lambda to extract searchable text from the items. Defaults to `toString()`.
+         * @param uniqueKeySelector Lambda to extract a unique key for each element.
          */
-        suspend operator fun <T> invoke(
-            items: Sequence<T>,
-            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = true,
-            maxNgramSize: Int = 4,
-            anchorWeight: Float = 10.0f,
-            lengthWeight: Float = 8.0f,
-            gestaltWeight: Float = 15.0f,
-            prefixWeight: Float = 6.0f,
-            fuzzyWeight: Float = 5.0f,
-            skipWeight: Float = 4.0f,
-            floatingWeight: Float = 2.5f,
-            textSelector: (T) -> String = { it.toString() }
-        ) = TypeaheadSearchEngine(
-            defaultDispatcher = defaultDispatcher,
-            ignoreCase = ignoreCase,
-            maxNgramSize = maxNgramSize,
-            anchorWeight = anchorWeight,
-            lengthWeight = lengthWeight,
-            gestaltWeight = gestaltWeight,
-            prefixWeight = prefixWeight,
-            fuzzyWeight = fuzzyWeight,
-            skipWeight = skipWeight,
-            floatingWeight = floatingWeight,
+        suspend operator fun <T, K> invoke(
+            items: Iterable<T>,
+            textSelector: (T) -> String = { it.toString() },
+            uniqueKeySelector: (T) -> K,
+        ): TypeaheadSearchEngine<T, K> = invoke(
+            items = items,
             textSelector = textSelector,
-        ).apply { addAll(items) }
-
-    }
-
-    /**
-     * Computes a character-level "heatmap" array that visually represents how well this query string
-     * matches against a target string. The heatmap uses a **multi-tier matching algorithm** inspired
-     * by human cognitive pattern recognition during typeahead scenarios.
-     *
-     * This function implements a **greedy, three-phase alignment strategy**:
-     *
-     * 1. **Exact Positional Matches (TIER_PRIMARY / Bright Yellow)**:
-     *    - Locks in characters that appear in the exact same position in both the query and target.
-     *    - This represents the "anchor points" of perfect typing.
-     *
-     * 2. **Contiguous N-Grams (TIER_SECONDARY / Dark Yellow)**:
-     *    - Finds the longest remaining sequences (2+ characters) that match consecutively.
-     *    - Emulates how humans recognize "blocks" of correct text even if misplaced.
-     *
-     * 3. **Scattered Skip-Grams (TIER_TERTIARY / Cyan)**:
-     *    - Matches individual remaining characters in a left-to-right greedy manner.
-     *    - Handles deletions, insertions, and severe transpositions.
-     *
-     * 4. **Unmatched Characters (TIER_NONE / Dim Gray)**:
-     *    - Any character in the target that couldn't be matched remains at the default tier.
-     *
-     * The algorithm uses **primitive boolean arrays** as "consumed character pools" to achieve
-     * `O(1)` tracking without allocating Lists or Objects, making it highly memory-efficient
-     * for mobile and wasm environments.
-     *
-     * ### Example:
-     * ```kotlin
-     * val query = "Sfoia"
-     * val target = "Sofia"
-     * val heatmap = query.computeHeatmap(target)
-     * // heatmap = [0, 1, 1, 1, 0]
-     * //            S  f  o  i  a
-     * // Tier 0: 'S' and 'a' are exact positional matches
-     * // Tier 1: 'f', 'o', 'i' form a contiguous block match
-     * ```
-     *
-     * @param targetStr The candidate string to match against (e.g., "Sofia").
-     * @param ignoreCase Whether to perform case-insensitive matching. Defaults to `true`.
-     * @return An [IntArray] where each index corresponds to a character in [targetStr], and
-     *         the value represents the match tier:
-     *         - [TIER_PRIMARY] (0): Exact positional match.
-     *         - [TIER_SECONDARY] (1): Part of a contiguous N-gram block.
-     *         - [TIER_TERTIARY] (2): Scattered single-character match.
-     *         - [TIER_NONE] (-1): Unmatched character (default).
-     */
-    private fun String.computeHeatmap(
-        targetStr: String,
-        ignoreCase: Boolean = true
-    ): IntArray {
-        val q = this
-        val queryLen = q.length
-        val targetLen = targetStr.length
-
-        // The final heatmap array to return
-        val heatmap = IntArray(targetLen) { TIER_NONE }
-
-        // Primitive boolean arrays to act as our "remaining pool".
-        // True means the character has been matched and removed from the pool.
-        // This provides O(1) tracking without allocating Lists or Objects.
-        val qConsumed = BooleanArray(queryLen)
-        val tConsumed = BooleanArray(targetLen)
-
-        // --- STEP 1: Exact Positional Matches (Tier 0 / Bright Yellow) ---
-        // Emulates human logic: "Lock in the characters that are in the exact right spot."
-        val minLen = min(queryLen, targetLen)
-        for (i in 0 until minLen) {
-            if (q[i].equals(targetStr[i], ignoreCase)) {
-                heatmap[i] = TIER_PRIMARY
-                qConsumed[i] = true
-                tConsumed[i] = true
-            }
-        }
-
-        // --- STEP 2: Contiguous N-Grams (Tier 1 / Dark Yellow) ---
-        // Emulates human logic: "Find the longest remaining blocks of text."
-        // We look for any unconsumed sequence of length >= 2.
-        for (i in 0 until queryLen) {
-            if (qConsumed[i]) continue
-
-            var bestTargetIdx = -1
-            var bestMatchLen = 0
-
-            for (j in 0 until targetLen) {
-                if (tConsumed[j]) continue
-
-                var currentLen = 0
-                // Keep checking forward as long as characters match and are unconsumed
-                while (i + currentLen < queryLen &&
-                    j + currentLen < targetLen &&
-                    !qConsumed[i + currentLen] &&
-                    !tConsumed[j + currentLen] &&
-                    q[i + currentLen].equals(targetStr[j + currentLen], ignoreCase)
-                ) {
-                    currentLen++
-                }
-
-                // Greedily remember the longest contiguous block found
-                if (currentLen > bestMatchLen) {
-                    bestMatchLen = currentLen
-                    bestTargetIdx = j
-                }
-            }
-
-            // If we found a valid N-gram block (2 or more characters)
-            if (bestMatchLen >= 2) {
-                for (k in 0 until bestMatchLen) {
-                    heatmap[bestTargetIdx + k] = TIER_SECONDARY
-                    qConsumed[i + k] = true
-                    tConsumed[bestTargetIdx + k] = true
-                }
-            }
-        }
-
-        // --- STEP 3: Scattered Skip-Grams (Tier 2 / Cyan) ---
-        // Emulates human logic: "Connect whatever individual letters are left over."
-        for (i in 0 until queryLen) {
-            if (qConsumed[i]) continue
-
-            for (j in 0 until targetLen) {
-                if (!tConsumed[j] && q[i].equals(targetStr[j], ignoreCase)) {
-                    heatmap[j] = TIER_TERTIARY
-
-                    // Mark as consumed so it cannot be reused
-                    qConsumed[i] = true
-                    tConsumed[j] = true
-                    break // Move to the next query character immediately
-                }
-            }
-        }
-
-        // Step 4 is implicit: Anything left unconsumed in the target remains TIER_NONE (Dim Gray).
-        return heatmap
+            uniqueKeySelector = uniqueKeySelector,
+            defaultDispatcher = Dispatchers.Default
+        )
     }
 }

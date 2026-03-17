@@ -14,15 +14,12 @@
  * limitations under the License.
  */
 
-package com.github.karloti.typeahead
-
 import io.github.karloti.typeahead.SparseVector
 import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import io.github.karloti.typeahead.renderHighlightedString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -71,6 +68,7 @@ val countries = listOf(
     "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 )
 
+const val isJsOrWasm = false
 
 class TypeaheadSearchEngineTest {
 
@@ -110,7 +108,6 @@ class TypeaheadSearchEngineTest {
 
         // For platforms with true multi-threading (JVM, Native), we use more writers.
         // For JS/WASM, we reduce the count to avoid heavy overhead while still testing the logic.
-        val isJsOrWasm = true
 
         val writersCount = if (isJsOrWasm) 5 else 100
         val itemsPerWriter = if (isJsOrWasm) 10 else 300
@@ -387,8 +384,7 @@ class TypeaheadSearchEngineTest {
     @Test
     fun `Verify single add under high concurrency works correctly and measure performance`() = runTest {
         val engine = TypeaheadSearchEngine<String>()
-        val isJsOrWasm = true
-        val totalItems = if (isJsOrWasm) 1000 else 50_000
+        val totalItems = if (isJsOrWasm) 1000 else 100_000
         val items = (1..totalItems).map { "Product $it" }
 
         val time = measureTime {
@@ -411,7 +407,6 @@ class TypeaheadSearchEngineTest {
     @Test
     fun `Verify addAll processes items correctly and measure performance`() = runTest {
         val engine = TypeaheadSearchEngine<String>()
-        val isJsOrWasm = true
         val totalItems = if (isJsOrWasm) 1000 else 50_000
         val items = (1..totalItems).map { "Product $it" }
 
@@ -423,5 +418,74 @@ class TypeaheadSearchEngineTest {
         println("✅ addAll() of $totalItems items took $time")
 
         assertEquals(totalItems, engine.size, "Engine should contain exactly 10,000 items after addAll")
+    }
+
+    /**
+     * A mock data class representing a versioned document.
+     * Used to verify that the search engine can deduplicate results based on a specific identity key
+     * even when the objects themselves are distinct due to other differing properties.
+     */
+    private data class VersionedDocument(val docId: String, val title: String, val version: Int)
+
+    /**
+     * Verifies that the [TypeaheadSearchEngine] properly delegates the unique key selection
+     * to the underlying priority queue, successfully deduplicating search results.
+     * When multiple items share the same unique key, only the highest-scoring match
+     * (or the first evaluated match of equal score) should remain in the final results.
+     */
+    @Test
+    fun `Verify engine deduplicates search results using custom unique key selector`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            uniqueKeySelector = { it.docId }
+        )
+
+        engine.addAll(
+            listOf(
+                VersionedDocument(docId = "doc-1", title = "Kotlin Multiplatform Guide", version = 1),
+                VersionedDocument(docId = "doc-1", title = "Kotlin Multiplatform Guide", version = 2),
+                VersionedDocument(docId = "doc-2", title = "Advanced Kotlin Coroutines", version = 1),
+                VersionedDocument(docId = "doc-3", title = "Java to Kotlin Migration", version = 1)
+            )
+        )
+
+        val results = engine.find("Kotlin")
+
+        assertEquals(3, results.size)
+
+        val uniqueIds = results.map { it.first.docId }.toSet()
+        assertEquals(3, uniqueIds.size)
+        assertTrue(uniqueIds.contains("doc-1"))
+        assertTrue(uniqueIds.contains("doc-2"))
+        assertTrue(uniqueIds.contains("doc-3"))
+    }
+
+    /**
+     * Verifies that the default factory method for [TypeaheadSearchEngine] implicitly uses
+     * the element itself as the unique key, automatically filtering out exact object duplicates
+     * from the search results.
+     */
+    @Test
+    fun `Verify engine default factory method uses element as unique key`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            textSelector = { it }
+        )
+
+        engine.addAll(
+            listOf(
+                "Apple",
+                "Banana",
+                "Apple",
+                "Apricot"
+            )
+        )
+
+        val results = engine.find("Ap")
+
+        assertEquals(2, results.size)
+
+        val resultStrings = results.map { it.first }
+        assertTrue(resultStrings.contains("Apple"))
+        assertTrue(resultStrings.contains("Apricot"))
     }
 }

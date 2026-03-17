@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import com.github.karloti.typeahead.countries
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
