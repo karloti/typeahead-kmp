@@ -68,7 +68,7 @@ val countries = listOf(
     "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 )
 
-const val isJsOrWasm = false
+const val isJsOrWasm = true
 
 class TypeaheadSearchEngineTest {
 
