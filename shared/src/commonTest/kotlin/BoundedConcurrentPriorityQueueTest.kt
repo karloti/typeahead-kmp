@@ -51,17 +51,32 @@ class BoundedConcurrentPriorityQueueTest {
     fun `test duplicate keys are correctly ignored`() {
         val queue = BoundedConcurrentPriorityQueue<SearchResultItem, Int>(
             maxSize = 3,
-            priorityComparator = compareBy { it.score },
+            priorityComparator = compareByDescending { it.score },
             uniqueKeySelector = { it.id }
         )
 
-        queue.add(SearchResultItem(id = 1, score = 10))
         queue.add(SearchResultItem(id = 1, score = 5))
+        queue.add(SearchResultItem(id = 1, score = 10))
         queue.add(SearchResultItem(id = 2, score = 20))
+        queue.add(SearchResultItem(id = 3, score = 3))
+        queue.add(SearchResultItem(id = 4, score = 4))
+        queue.add(SearchResultItem(id = 5, score = 5))
+
 
         val result = queue.items.value
-        assertEquals(2, result.size)
-        assertEquals(10, result.first { it.id == 1 }.score)
+        result.forEach { println("Result: $it") }
+
+        queue.items.value.forEach { println("Result: $it") }
+
+        assertEquals(3, result.size)
+        assertEquals(20, result[0].score)
+        assertEquals(10, result[1].score)
+        assertEquals(5, result[2].score)
+        assertEquals(2, result[0].id)
+        assertEquals(1, result[1].id)
+        assertEquals(5, result[2].id)
+
+
     }
 
     /**
@@ -188,7 +203,7 @@ class BoundedConcurrentPriorityQueueTest {
 
         val result = queue.items.value
         assertEquals(3, result.size)
-        assertEquals(listOf(50, 30, 20), result.map { it.score })
+        assertEquals(listOf(100, 30, 20), result.map { it.score })
     }
 
     /**

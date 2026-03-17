@@ -30,7 +30,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.6.0"
+val projectVersion = "1.6.1"
 version = projectVersion
 
 kotlin {
@@ -138,7 +138,7 @@ kotlin {
 }
 
 mavenPublishing {
-    publishToMavenCentral()
+    publishToMavenCentral(automaticRelease = true)
 
     signAllPublications()
 

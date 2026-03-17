@@ -20,14 +20,16 @@ package io.github.karloti.typeahead
 
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.PersistentList
-import kotlinx.collections.immutable.PersistentSet
+import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.mutate
 import kotlinx.collections.immutable.persistentListOf
-import kotlinx.collections.immutable.persistentSetOf
+import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 
 /**
@@ -56,7 +58,7 @@ class BoundedConcurrentPriorityQueue<T, K>(
      */
     private data class QueueState<T, K>(
         val items: PersistentList<T> = persistentListOf(),
-        val keys: PersistentSet<K> = persistentSetOf()
+        val persistentMap: PersistentMap<K, T> = persistentMapOf()
     )
 
     private val _state = MutableStateFlow(QueueState<T, K>())
@@ -92,41 +94,46 @@ class BoundedConcurrentPriorityQueue<T, K>(
 
         _state.update { currentState ->
             // Fast path: Ignore if an item with the exact same unique key is already in the queue
-            if (currentState.keys.contains(itemKey)) {
-                return@update currentState
+
+            val existingItem = currentState.persistentMap[itemKey]
+
+            existingItem?.let {
+                if (priorityComparator.compare(item, existingItem) > 0) return@update currentState
             }
+
+            val last = currentState.items.lastOrNull()
+
+            val compare = last?.let { priorityComparator.compare(item, last) }
 
             // Fast path: Discard if the queue is full and the item is worse or equal to the worst item
-            if (currentState.items.size >= maxSize && priorityComparator.compare(
-                    item,
-                    currentState.items.last()
-                ) >= 0
-            ) {
-                return@update currentState
-            }
-
-            // Find the exact insertion index using binary search for O(log N) performance
-            val searchResult = currentState.items.binarySearch(item, priorityComparator)
-            val insertIndex = if (searchResult < 0) -(searchResult + 1) else searchResult
+            if (currentState.items.size >= maxSize && compare != null && compare >= 0) return@update currentState
 
             var evictedItem: T? = null
 
             // Mutate the persistent list and set atomically
             val newItems = currentState.items.mutate { mutableList ->
+                if (existingItem != null) {
+                    val existingItemIndex = mutableList.binarySearch(existingItem, priorityComparator)
+                    require(existingItemIndex >= 0) { "Existing item not found in the list!" }
+                    mutableList.removeAt(existingItemIndex)
+                }
+
+                val searchResult = mutableList.binarySearch(item, priorityComparator)
+                val insertIndex = if (searchResult < 0) -(searchResult + 1) else searchResult
                 mutableList.add(insertIndex, item)
                 if (mutableList.size > maxSize) {
-                    evictedItem = mutableList.removeAt(mutableList.size - 1)
+                    evictedItem = mutableList.removeLast()
                 }
             }
 
-            val newKeys = currentState.keys.mutate { mutableSet ->
-                mutableSet.add(itemKey)
+            val newPersistentMap = currentState.persistentMap.mutate { mutableMap ->
+                mutableMap[itemKey] = item
                 evictedItem?.let { evicted ->
-                    mutableSet.remove(uniqueKeySelector(evicted))
+                    mutableMap.remove(uniqueKeySelector(evicted))
                 }
             }
 
-            QueueState(newItems, newKeys)
+            QueueState(newItems, newPersistentMap)
         }
     }
 
