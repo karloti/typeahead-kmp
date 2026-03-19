@@ -30,7 +30,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.6.2"
+val projectVersion = "1.6.3"
 version = projectVersion
 
 kotlin {
@@ -101,24 +101,7 @@ kotlin {
 
     // Linux
     linuxArm64()
-    linuxX64 {
-        binaries {
-            executable {
-                entryPoint = "main"
-                runTask?.apply {
-                    args(
-                        listOf(
-                            "--path",
-                            "C:\\Users\\skarl\\AndroidStudioProjects\\RealRate",
-                            "--name",
-                            "shared.exe"
-                        )
-
-                    )
-                }
-            }
-        }
-    }
+    linuxX64()
 
     // JavaScript
     js {
@@ -154,7 +137,7 @@ kotlin {
             implementation(libs.kotlinx.collections.immutable)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.atomicfu)
-            implementation("io.github.karloti:concurrent-priority-queue:1.0.1")
+            implementation(libs.karloti.concurrent.priority.queue)
         }
 
         commonTest.dependencies {
@@ -176,8 +159,8 @@ kotlin {
     }
 }
 
-mavenPublishing {
-    publishToMavenCentral(automaticRelease = true)
+mavenPublishing {    publishToMavenCentral(automaticRelease = true)
+
 
     signAllPublications()
 

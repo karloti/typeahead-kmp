@@ -87,7 +87,7 @@ class TypeaheadSearchEngine<T, K>(
 
             val topResultsQueue = ConcurrentPriorityQueue<Pair<T, Float>, K>(
                 maxSize = maxResults,
-                priorityComparator = compareByDescending { it.second },
+                comparator = compareByDescending { it.second },
                 uniqueKeySelector = { uniqueKeySelector(it.first) }
             )
             _embeddings.value.values.forEach { entries ->
