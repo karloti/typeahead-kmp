@@ -36,7 +36,7 @@ Add the dependency to your `build.gradle.kts` in the `commonMain` source set:
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.karloti:typeahead-kmp:1.5.0")  // Replace it with the latest version
+            implementation("io.github.karloti:typeahead-kmp:1.6.3")  // Replace it with the latest version
         }
     }
 }
@@ -48,14 +48,17 @@ kotlin {
 
 | Category | Platform | Supported KMP Targets |
 | :--- | :--- | :--- |
-| **Mobile** | Android | `androidTarget` |
+| **Mobile** | Android | `android` |
 | **Mobile** | iOS | `iosX64`, `iosArm64`, `iosSimulatorArm64` |
+| **Mobile** | tvOS | `tvosArm64`, `tvosSimulatorArm64` |
+| **Mobile** | watchOS | `watchosArm32`, `watchosArm64`, `watchosDeviceArm64`, `watchosSimulatorArm64` |
 | **Desktop & Server** | JVM | `jvm` |
-| **Desktop & Server** | macOS | `macosX64`, `macosArm64` |
+| **Desktop & Server** | macOS | `macosArm64` |
 | **Desktop & Server** | Linux | `linuxX64`, `linuxArm64` |
 | **Desktop & Server** | Windows | `mingwX64` |
-| **Web** | JavaScript | `js` (with IR compiler) |
-| **Web** | WebAssembly | `wasmJs` |
+| **Native Mobile** | Android Native | `androidNativeArm32`, `androidNativeArm64`, `androidNativeX86`, `androidNativeX64` |
+| **Web** | JavaScript | `js` |
+| **Web** | WebAssembly | `wasmJs`, `wasmWasi` |
 
 Because the engine manages its own memory efficiently via primitive arrays and lock-free concurrency, you will get the exact same deterministic search results and blazing-fast performance regardless of the platform you compile for.
 
