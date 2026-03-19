@@ -15,12 +15,12 @@
  */
 
 @file:OptIn(ExperimentalWasmDsl::class, ExperimentalKotlinGradlePluginApi::class)
-@file:Suppress("UnstableApiUsage")
+//@file:Suppress("UnstableApiUsage")
 
-import com.android.build.api.dsl.androidLibrary
+//import com.android.build.api.dsl.androidLibrary
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+//import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -30,12 +30,15 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.6.1"
+val projectVersion = "1.6.2"
 version = projectVersion
 
 kotlin {
+    // JVM
     jvm()
-    androidLibrary {
+
+    // Android
+    android {
         namespace = "io.github.karloti.typeahead"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
@@ -45,15 +48,38 @@ kotlin {
         withDeviceTestBuilder {
             sourceSetTreeName = "test"
         }
-        compilerOptions {
-            jvmTarget = JvmTarget.JVM_11
+
+        compilations.configureEach {
+            compileTaskProvider.configure {
+            }
         }
     }
+
+    // iOS
     iosX64()
     iosArm64()
     iosSimulatorArm64()
-    macosX64()
+
+    // tvOS
+    tvosArm64()
+    tvosSimulatorArm64()
+
+    // watchOS
+    watchosArm32()
+    watchosArm64()
+    watchosDeviceArm64()
+    watchosSimulatorArm64()
+
+    // macOS
     macosArm64()
+
+    // Android Native
+    androidNativeArm32()
+    androidNativeArm64()
+    androidNativeX86()
+    androidNativeX64()
+
+    // Windows
     mingwX64 {
         binaries {
             executable {
@@ -72,6 +98,9 @@ kotlin {
             }
         }
     }
+
+    // Linux
+    linuxArm64()
     linuxX64 {
         binaries {
             executable {
@@ -90,6 +119,8 @@ kotlin {
             }
         }
     }
+
+    // JavaScript
     js {
         browser {
             testTask {
@@ -100,6 +131,7 @@ kotlin {
         }
     }
 
+    // WebAssembly
     wasmJs {
         browser {
             testTask {
@@ -108,6 +140,12 @@ kotlin {
                 }
             }
         }
+//        nodejs()
+    }
+
+    wasmWasi {
+        // To build distributions for and run tests use one or several of:
+        nodejs()
     }
 
     sourceSets {
@@ -115,8 +153,8 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.collections.immutable)
             implementation(libs.kotlinx.serialization.json)
-            implementation(libs.squareup.okio)
             implementation(libs.kotlinx.atomicfu)
+            implementation("io.github.karloti:concurrent-priority-queue:1.0.1")
         }
 
         commonTest.dependencies {
@@ -125,14 +163,15 @@ kotlin {
         }
 
         mingwX64Main.dependencies {
+            implementation(libs.squareup.okio)
+            implementation("com.github.ajalt.mordant:mordant:3.0.2")
             implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
         }
 
         linuxX64Main.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
-        }
-        nativeMain.dependencies {
+            implementation(libs.squareup.okio)
             implementation("com.github.ajalt.mordant:mordant:3.0.2")
+            implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.6")
         }
     }
 }
@@ -191,4 +230,5 @@ tasks.register("createMissingSourceDirs") {
             }
         }
     }
-}*/
+}
+*/

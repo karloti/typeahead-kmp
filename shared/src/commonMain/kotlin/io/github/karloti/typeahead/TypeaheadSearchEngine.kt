@@ -18,6 +18,7 @@
 
 package io.github.karloti.typeahead
 
+import ConcurrentPriorityQueue
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.update
 import kotlinx.collections.immutable.PersistentMap
@@ -84,7 +85,7 @@ class TypeaheadSearchEngine<T, K>(
         return withContext(defaultDispatcher) {
             val queryVector = query.toPositionalEmbedding()
 
-            val topResultsQueue = BoundedConcurrentPriorityQueue<Pair<T, Float>, K>(
+            val topResultsQueue = ConcurrentPriorityQueue<Pair<T, Float>, K>(
                 maxSize = maxResults,
                 priorityComparator = compareByDescending { it.second },
                 uniqueKeySelector = { uniqueKeySelector(it.first) }
