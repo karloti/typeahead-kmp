@@ -237,7 +237,8 @@ class TypeaheadSearchEngineTest {
         val searchEngine = TypeaheadSearchEngine<String>()
         searchEngine.add("Bulgaria")
 
-        searchEngine.findWithHighlights("blugaria", maxResults = 1).first().heatmap.let { topMatch ->
+        searchEngine.find("blugaria", maxResults = 1)
+            searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
             println("Top match heatmap: ${topMatch.contentToString()}")
             val expectedHeatmap = intArrayOf(0, 2, 2, 0, 0, 0, 0, 0)
             assertTrue(
@@ -245,7 +246,8 @@ class TypeaheadSearchEngineTest {
                 message = "Floating N-gram heatmap must match expected secondary tiers."
             )
         }
-        searchEngine.findWithHighlights("bulgira ", maxResults = 1).first().heatmap.let { topMatch ->
+        searchEngine.find("bulgira ", maxResults = 1)
+        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
             println("Top match heatmap: ${topMatch.contentToString()}")
             val expectedHeatmap = intArrayOf(0, 0, 0, 0, 2, 0, 2, -1)
             assertTrue(
@@ -300,8 +302,8 @@ class TypeaheadSearchEngineTest {
         println("-------------------------------------------------------")
 
         for (query in typingSimulation) {
-            val results = searchEngine.findWithHighlights(query, maxResults = 1)
-            val topMatch = results.firstOrNull()
+            searchEngine.find(query, maxResults = 1)
+            val topMatch = searchEngine.highlightedResults.value.firstOrNull()
 
             if (topMatch != null) {
                 // Render the colored string
@@ -366,7 +368,8 @@ class TypeaheadSearchEngineTest {
         typingSimulation.forEach { query ->
             val paddedQuery = query.padEnd(8, ' ')
             println(" Query: [\u001B[35m${paddedQuery}\u001B[0m]")
-            searchEngine.findWithHighlights(query).forEach { highlightedMatch ->
+            searchEngine.find(query)
+            searchEngine.highlightedResults.value.forEach { highlightedMatch ->
                 val highlightedText = highlightedMatch.heatmap
                     .renderHighlightedString(text = highlightedMatch.item.countryName)
                 // Format score to 4 decimal places for clean UI alignment

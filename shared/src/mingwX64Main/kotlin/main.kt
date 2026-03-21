@@ -167,7 +167,8 @@ fun main(args: Array<String>) = runBlocking {
             t.println(successStyle(" -> ") + white(path.toString()))
         }
     } else {
-        val matches = searchEngine.findWithHighlights(targetName)
+        searchEngine.find(targetName)
+        val matches = searchEngine.highlightedResults.value
         t.println(yellow("No exact match found. Possible suggestions (${matches.size}):"))
         t.println()
 

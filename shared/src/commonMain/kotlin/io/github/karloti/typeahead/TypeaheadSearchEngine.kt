@@ -69,6 +69,10 @@ class TypeaheadSearchEngine<T, K>(
 
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
     private val _embeddings = atomic<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentMapOf())
+    private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
+    val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
+    private val _highlightedResults = MutableStateFlow< List<HighlightedMatch<T>>>(emptyList())
+    val highlightedResults: StateFlow<List<HighlightedMatch<T>>> = _highlightedResults.asStateFlow()
 
     /**
      * Finds the top matching elements for the given query using Cosine Similarity.
@@ -98,33 +102,24 @@ class TypeaheadSearchEngine<T, K>(
                 }
             }
 
+            // TODO: check for race condition
+            _highlightedResults.value = topResultsQueue.items.value.map { match ->
+                val targetText = textSelector(match.first)
+                val heatmap = query.computeHeatmap(
+                    targetStr = targetText,
+                    ignoreCase = ignoreCase,
+                )
+
+                HighlightedMatch(
+                    item = match.first,
+                    score = match.second,
+                    heatmap = heatmap,
+                )
+            }
+
+            _results.value = topResultsQueue.items.value
+
             topResultsQueue.items.value
-        }
-    }
-
-    /**
-     * Executes a search and automatically applies character-level highlighting alignment
-     * to the resulting matches. This represents a highly optimized "Two-Phase" search pipeline
-     * where phase one is similarity scoring and phase two is visual alignment (heatmap).
-     *
-     * @param query The user's search query.
-     * @param maxResults The maximum number of top results to return. Defaults to 5.
-     * @return A list of [HighlightedMatch] containing the item, its similarity score, and a visual heatmap array.
-     */
-    suspend fun findWithHighlights(query: String, maxResults: Int = DEFAULT_MAX_RESULTS): List<HighlightedMatch<T>> {
-        val results = find(query, maxResults)
-        return results.map { match ->
-            val targetText = textSelector(match.first)
-            val heatmap = query.computeHeatmap(
-                targetStr = targetText,
-                ignoreCase = ignoreCase,
-            )
-
-            HighlightedMatch(
-                item = match.first,
-                score = match.second,
-                heatmap = heatmap,
-            )
         }
     }
 
