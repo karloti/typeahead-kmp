@@ -16,6 +16,8 @@
 
 import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
+import io.github.karloti.typeahead.exportToSink
+import io.github.karloti.typeahead.importFromSource
 import kotlinx.coroutines.test.runTest
 import kotlinx.io.asSink
 import kotlinx.io.asSource
@@ -116,9 +118,7 @@ class TypeaheadSearchEngineTestJava {
         val exportStartTime = System.currentTimeMillis()
 
         // Създаваме Sink от файла и експортираме директно
-        tempFile.outputStream().asSink().use { sink ->
-            searchEngine.exportToSink(sink.buffered(), Product.serializer())
-        }
+        tempFile.outputStream().asSink().use { sink -> searchEngine.exportToSink(sink.buffered()) }
 
         val exportEndTime = System.currentTimeMillis()
         val memoryAfterExport = runtime.totalMemory() - runtime.freeMemory()
@@ -147,9 +147,7 @@ class TypeaheadSearchEngineTestJava {
         val importStartTime = System.currentTimeMillis()
 
         // Създаваме Source от файла и импортираме директно
-        tempFile.inputStream().asSource().use { source ->
-            newSearchEngine.importFromSource(source.buffered(), Product.serializer())
-        }
+        tempFile.inputStream().asSource().use { source -> newSearchEngine.importFromSource(source.buffered()) }
 
         val importEndTime = System.currentTimeMillis()
         val memoryAfterImport = runtime.totalMemory() - runtime.freeMemory()
