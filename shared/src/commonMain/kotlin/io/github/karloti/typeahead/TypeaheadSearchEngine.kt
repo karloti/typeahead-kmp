@@ -21,6 +21,8 @@ package io.github.karloti.typeahead
 import io.github.karloti.cpq.ConcurrentPriorityQueue
 import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadMetadata
 import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadPayload
+import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.EPSILON_FLOAT
+import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.FIND_BATCH_SIZE
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentHashMapOf
 import kotlinx.collections.immutable.toPersistentHashMap
@@ -40,6 +42,8 @@ import kotlinx.serialization.serializer
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
+import kotlin.sequences.flatMap
+import kotlin.sequences.forEach
 
 /**
  * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.
@@ -57,14 +61,23 @@ import kotlin.math.sqrt
 
 class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
     private val defaultDispatcher: CoroutineDispatcher,
-    private val metadata: TypeaheadMetadata,
+    /**
+     * The active configuration of this engine.
+     *
+     * Reflects all weight parameters, N-gram size, and result limits. When
+     * [importFromSource] is called with `clearExisting = true`, this property is
+     * atomically replaced by the [TypeaheadMetadata] embedded in the import stream,
+     * so the engine's configuration is always consistent with its indexed vectors.
+     */
+    @PublishedApi internal var metadata: TypeaheadMetadata,
     @PublishedApi internal val textSelector: (T) -> String,
     private val uniqueKeySelector: (T) -> K,
 ) : TypeaheadSearch<T, K> {
+
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
     @PublishedApi
-    internal val _embeddings =
-        MutableStateFlow<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentHashMapOf())
+    internal val embeddings: MutableStateFlow<PersistentMap<String, PersistentMap<T, SparseVector>>> =
+        MutableStateFlow(persistentHashMapOf())
     private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
     override val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
     private val _highlightedResults = MutableStateFlow<List<HighlightedMatch<T>>>(emptyList())
@@ -88,7 +101,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      *
      * @param query The user's input string to search for.
      * @return A descending-score list of pairs containing the matched object and its similarity score `[0.0, 1.0]`.
-     * @throws CancellationException if the coroutine scope is cancelled during execution.
+     * @throws CancellationException if the coroutine scope is canceled during execution.
      */
     override suspend fun find(
         query: String,
@@ -104,7 +117,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
         )
 
         topResultsQueue.addAll(
-            elements = _embeddings.value.values
+            elements = embeddings.value.values
                 .asSequence()
                 .flatMap { it.entries.asSequence() }
                 .asFlow(),
@@ -154,7 +167,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
         val stringToVectorize = textSelector(item)
         val vector = stringToVectorize.toPositionalEmbedding()
 
-        _embeddings.update { currentMap ->
+        embeddings.update { currentMap ->
             val existing = currentMap[stringToVectorize] ?: persistentHashMapOf()
             currentMap.put(stringToVectorize, existing.put(item, vector))
         }
@@ -269,7 +282,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * @param item The element to remove.
      */
     override fun remove(item: T) {
-        _embeddings.update { currentMap ->
+        embeddings.update { currentMap ->
             val key = textSelector(item)
             val inner = currentMap[key] ?: return@update currentMap
             val updated = inner.remove(item)
@@ -289,7 +302,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * ```
      */
     override fun clear() {
-        _embeddings.value = persistentHashMapOf()
+        embeddings.value = persistentHashMapOf()
     }
 
     /**
@@ -304,7 +317,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * ```
      */
     override val size: Int
-        get() = _embeddings.value.size
+        get() = embeddings.value.size
 
     /**
      * Checks if an item with the same text key is currently indexed in the engine.
@@ -323,7 +336,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * @return `true` if an item with the same text key exists in the index, `false` otherwise.
      */
     override operator fun contains(item: T): Boolean {
-        return _embeddings.value.containsKey(textSelector(item))
+        return embeddings.value.containsKey(textSelector(item))
     }
 
     /**
@@ -341,158 +354,9 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * @return A read-only list of all domain objects.
      */
     override fun getAllItems(): List<T> {
-        return _embeddings.value.values.flatMap { it.keys }
+        return embeddings.value.values.flatMap { it.keys }
     }
 
-    /**
-     * Exports the current engine state as a streaming JSON array to the given [Sink].
-     *
-     * The output is a JSON array where the first element is a [TypeaheadMetadata] header
-     * and all subsequent elements are [TypeaheadPayload] records. The streaming approach
-     * ensures constant memory usage regardless of the dataset size.
-     *
-     * The exported data can be restored via [importFromSource].
-     *
-     * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"), textSelector = { it })
-     * fileSystem.sink(path).use { sink ->
-     *     engine.exportToSink(sink, serializer<String>())
-     * }
-     * ```
-     *
-     * @param sink The [Sink] to write the JSON array to.
-     * @param itemSerializer The [KSerializer] for serializing items of type [T].
-     * @param json The [Json] instance used for serialization.
-     */
-    fun exportToSink(
-        sink: Sink,
-        itemSerializer: KSerializer<T>,
-        json: Json = Json {
-            encodeDefaults = true
-            ignoreUnknownKeys = true
-        }
-    ) {
-        val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
-
-        sink.buffered().use { bufferedSink ->
-            // Open JSON array
-            bufferedSink.writeString("[\n")
-
-            // 1. Write metadata as the first element
-            val metaString = json.encodeToString(polymorphicSerializer, metadata)
-            bufferedSink.writeString("  $metaString")
-
-            // 2. Lazily iterate and write each payload record
-            _embeddings.value.values
-                .asSequence()
-                .flatMap { it.entries }
-                .forEach { entry ->
-                    bufferedSink.writeString(",\n")
-                    val payload = TypeaheadPayload(item = entry.key, vector = entry.value)
-                    val payloadString = json.encodeToString(polymorphicSerializer, payload)
-                    bufferedSink.writeString("  $payloadString")
-                }
-
-            // Close JSON array
-            bufferedSink.writeString("\n]")
-        }
-    }
-
-    /**
-     * Returns the engine's [TypeaheadMetadata.maxNgramSize] for use in inline functions
-     * that cannot access the private [metadata] property directly.
-     */
-    @PublishedApi
-    internal fun validateAndGetNgramSize(): Int = metadata.maxNgramSize
-
-    /**
-     * Restores the engine state by streaming records from a [Source], bypassing vectorization.
-     *
-     * This method deserializes a JSON array previously produced by [exportToSink]. The first
-     * element is expected to be [TypeaheadMetadata]; all subsequent elements are [TypeaheadPayload]
-     * records whose pre-computed vectors are loaded directly into the index.
-     *
-     * If the imported metadata's [TypeaheadMetadata.maxNgramSize] differs from the current engine's
-     * configuration, an [IllegalStateException] is thrown because the imported vectors are
-     * incompatible with vectors generated by this engine instance.
-     *
-     * ```kotlin
-     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, uniqueKeySelector = { it })
-     * fileSystem.source(path).use { source ->
-     *     engine.importFromSource<String>(source)
-     * }
-     * ```
-     *
-     * @param A The reified type of the serialized items (must match [T] at runtime).
-     * @param source The [Source] to read the JSON array from.
-     * @param itemSerializer The [KSerializer] for item deserialization. Defaults to the reified serializer.
-     * @param clearExisting If `true` (default), the current index is replaced; if `false`, imported records are merged.
-     * @param json The [Json] instance used for deserialization.
-     * @throws IllegalStateException if the imported metadata has an incompatible [TypeaheadMetadata.maxNgramSize].
-     */
-    @Suppress("UNCHECKED_CAST")
-    inline fun <reified A> importFromSource(
-        source: Source,
-        itemSerializer: KSerializer<A> = serializer<A>(),
-        clearExisting: Boolean = true,
-        json: Json = Json {
-            encodeDefaults = true
-            ignoreUnknownKeys = true
-        }
-    ) {
-        val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
-        val bufferMap = mutableMapOf<String, PersistentMap<A, SparseVector>>()
-        val expectedNgramSize = validateAndGetNgramSize()
-
-        source.buffered().use { bufferedSource ->
-            val sequence = json.decodeSourceToSequence(
-                source = bufferedSource,
-                deserializer = polymorphicSerializer,
-                format = DecodeSequenceMode.ARRAY_WRAPPED
-            )
-
-            val iterator = sequence.iterator()
-
-            // 1. Consume the first record (metadata header)
-            if (iterator.hasNext()) {
-                when (val firstItem = iterator.next()) {
-                    is TypeaheadMetadata -> {
-                        check(firstItem.maxNgramSize == expectedNgramSize) {
-                            "Imported maxNgramSize (${firstItem.maxNgramSize}) does not match " +
-                                    "engine maxNgramSize ($expectedNgramSize). " +
-                                    "Vectors are incompatible and search quality will be degraded."
-                        }
-                    }
-
-                    is TypeaheadPayload -> {
-                        addRecordToBuffer(bufferMap, firstItem)
-                    }
-                }
-            }
-
-            // 2. Consume the remaining records (payload entries)
-            iterator.forEach { item ->
-                if (item is TypeaheadPayload) {
-                    addRecordToBuffer(bufferMap, item)
-                }
-            }
-        }
-
-        val persistentBuffer = bufferMap.toPersistentHashMap()
-
-        if (clearExisting) {
-            _embeddings.value = persistentBuffer as PersistentMap<String, PersistentMap<T, SparseVector>>
-        } else {
-            _embeddings.update { currentMap ->
-                var mergedMap = currentMap
-                persistentBuffer.forEach { (key, innerMap) ->
-                    val existingInner = mergedMap[key] ?: persistentHashMapOf()
-                    mergedMap = mergedMap.put(key, existingInner.putAll(innerMap as PersistentMap<T, SparseVector>))
-                }
-                mergedMap
-            }
-        }
-    }
 
     /**
      * Inserts a deserialized [TypeaheadPayload] into the mutable import buffer.
@@ -504,9 +368,9 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * @param buffer The accumulating mutable map used during [importFromSource].
      * @param payload The deserialized payload record to insert.
      */
-    @PublishedApi
     @Suppress("UNCHECKED_CAST")
-    internal inline fun <reified A> addRecordToBuffer(
+    @PublishedApi
+    internal fun <A> addRecordToBuffer(
         buffer: MutableMap<String, PersistentMap<A, SparseVector>>,
         payload: TypeaheadPayload<A>
     ) {
@@ -777,5 +641,234 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
             uniqueKeySelector = uniqueKeySelector,
             defaultDispatcher = Dispatchers.Default
         )
+
+        /**
+         * Creates a [TypeaheadSearchEngine] by restoring its complete state — configuration
+         * and pre-computed vectors — from a [Source] produced by [exportToSink].
+         *
+         * The engine's [TypeaheadMetadata] (weights, N-gram size, result limit) is read
+         * from the stream's first element, so no separate metadata parameter is needed.
+         * All subsequent elements are [TypeaheadPayload] records loaded directly into the
+         * index without re-vectorization, making this ~50× faster than re-inserting items.
+         *
+         * ```kotlin
+         * data class Product(val id: Int, val name: String)
+         *
+         * val engine = TypeaheadSearchEngine(
+         *     source = fileSystem.source(snapshotPath),
+         *     itemSerializer = Product.serializer(),
+         *     textSelector = { it.name },
+         *     uniqueKeySelector = { it.id }
+         * )
+         * // engine.metadata reflects the configuration stored in the snapshot.
+         * val results = engine.find("kotlin") // instant — vectors already loaded
+         * ```
+         *
+         * @param T The type of elements held in the engine.
+         * @param K The type of unique key used to identify each element.
+         * @param source The [Source] to restore from, as produced by [exportToSink].
+         * @param itemSerializer The [KSerializer] for deserializing items of type [T].
+         * @param textSelector Extracts searchable text from each element [T].
+         * @param uniqueKeySelector Extracts a unique identity key from each element [T].
+         * @param defaultDispatcher The coroutine dispatcher used for search computations.
+         * @param json The [Json] instance used for deserialization.
+         * @return A fully restored [TypeaheadSearchEngine] with [metadata] set from the stream.
+         */
+        inline operator fun <reified T, K> invoke(
+            source: Source,
+            itemSerializer: KSerializer<T> = serializer<T>(),
+            noinline textSelector: (T) -> String,
+            noinline uniqueKeySelector: (T) -> K,
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true },
+        ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
+            defaultDispatcher = defaultDispatcher,
+            metadata = TypeaheadMetadata(),
+            textSelector = textSelector,
+            uniqueKeySelector = uniqueKeySelector,
+        ).apply { importFromSource(source, itemSerializer, clearExisting = true, json = json) }
+
+        /**
+         * Creates a [TypeaheadSearchEngine] where each element serves as its own unique key,
+         * restoring complete state — configuration and pre-computed vectors — from a [Source]
+         * produced by [exportToSink].
+         *
+         * ```kotlin
+         * val engine = TypeaheadSearchEngine(
+         *     source = fileSystem.source(snapshotPath),
+         *     itemSerializer = serializer<String>()
+         * )
+         * // engine.metadata reflects the configuration stored in the snapshot.
+         * ```
+         *
+         * @param T The type of elements held in the engine, used as its own key.
+         * @param source The [Source] to restore from, as produced by [exportToSink].
+         * @param itemSerializer The [KSerializer] for deserializing items of type [T].
+         * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
+         * @param defaultDispatcher The coroutine dispatcher used for search computations.
+         * @param json The [Json] instance used for deserialization.
+         * @return A fully restored [TypeaheadSearchEngine] with [metadata] set from the stream.
+         */
+        inline operator fun <reified T> invoke(
+            source: Source,
+            itemSerializer: KSerializer<T> = serializer<T>(),
+            noinline textSelector: (T) -> String = { it.toString() },
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true },
+        ): TypeaheadSearchEngine<T, T> = invoke(
+            source = source,
+            itemSerializer = itemSerializer,
+            textSelector = textSelector,
+            uniqueKeySelector = { it },
+            defaultDispatcher = defaultDispatcher,
+            json = json,
+        )
+    }
+}
+
+/**
+ * Exports the current engine state as a streaming JSON array to the given [Sink].
+ *
+ * The output is a JSON array where the first element is a [TypeaheadMetadata] header
+ * and all subsequent elements are [TypeaheadPayload] records. The streaming approach
+ * ensures constant memory usage regardless of the dataset size.
+ *
+ * The exported data can be restored via [importFromSource].
+ *
+ * ```kotlin
+ * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"), textSelector = { it })
+ * fileSystem.sink(path).use { sink ->
+ *     engine.exportToSink(sink, serializer<String>())
+ * }
+ * ```
+ *
+ * @param sink The [Sink] to write the JSON array to.
+ * @param itemSerializer The [KSerializer] for serializing items of type [T].
+ * @param json The [Json] instance used for serialization.
+ */
+inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
+    sink: Sink,
+    itemSerializer: KSerializer<T> = serializer<T>(),
+    json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+) {
+    val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
+
+    sink.buffered().use { bufferedSink ->
+        // Open JSON array
+        bufferedSink.writeString("[\n")
+
+        // 1. Write metadata as the first element
+        val metaString = json.encodeToString(polymorphicSerializer, metadata)
+        bufferedSink.writeString("  $metaString")
+
+        // 2. Lazily iterate and write each payload record
+        embeddings.value.values
+            .asSequence()
+            .flatMap { it.entries }
+            .forEach { entry ->
+                bufferedSink.writeString(",\n")
+                val payload = TypeaheadPayload(item = entry.key, vector = entry.value)
+                val payloadString = json.encodeToString(polymorphicSerializer, payload)
+                bufferedSink.writeString("  $payloadString")
+            }
+
+        // Close JSON array
+        bufferedSink.writeString("\n]")
+    }
+}
+
+
+/**
+ * Restores the engine state by streaming records from a [Source], bypassing vectorization.
+ *
+ * Deserializes a JSON array previously produced by [exportToSink]. The first element is
+ * expected to be a [TypeaheadMetadata] header; all subsequent elements are [TypeaheadPayload]
+ * records whose pre-computed vectors are loaded directly into the index.
+ *
+ * **Metadata handling:**
+ * - `clearExisting = true` (default): [metadata] is replaced by the value read from the
+ *   stream, so the engine's configuration is always consistent with its indexed vectors.
+ * - `clearExisting = false`: the imported [TypeaheadMetadata.maxNgramSize] must equal the
+ *   engine's current value; merging vectors produced with a different N-gram size would
+ *   corrupt cosine-similarity scores.
+ *
+ * ```kotlin
+ * val engine = TypeaheadSearchEngine<String, String>(
+ *     textSelector = { it },
+ *     uniqueKeySelector = { it }
+ * )
+ * fileSystem.source(path).use { source ->
+ *     engine.importFromSource(source, serializer<String>())
+ * }
+ * // engine.metadata now reflects the configuration stored in the file.
+ * ```
+ *
+ * @param T The type of the serialized items (must be assignment-compatible with [T] at runtime).
+ * @param source The [Source] to read the JSON array from.
+ * @param itemSerializer The [KSerializer] for item deserialization.
+ * @param clearExisting If `true`, replaces the current index and [metadata]; if `false`, merges records.
+ * @param json The [Json] instance used for deserialization.
+ * @throws IllegalStateException if [clearExisting] is `false` and the imported
+ *         [TypeaheadMetadata.maxNgramSize] differs from the engine's current value.
+ */
+@Suppress("UNCHECKED_CAST")
+inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
+    source: Source,
+    itemSerializer: KSerializer<T> = serializer<T>(),
+    clearExisting: Boolean = true,
+    json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+) {
+    val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
+    val bufferMap = mutableMapOf<String, PersistentMap<T, SparseVector>>()
+
+    source.buffered().use { bufferedSource ->
+        val sequence = json.decodeSourceToSequence(
+            source = bufferedSource,
+            deserializer = polymorphicSerializer,
+            format = DecodeSequenceMode.ARRAY_WRAPPED
+        )
+
+        val iterator = sequence.iterator()
+
+        // 1. Consume the first record (metadata header)
+        if (iterator.hasNext()) {
+            when (val firstItem = iterator.next()) {
+                is TypeaheadMetadata -> {
+                    if (clearExisting) {
+                        metadata = firstItem
+                    } else {
+                        check(firstItem == metadata) {
+                            """Imported metadata does not match engine metadata. To merge records, both must have identical weights and N-gram sizes to ensure consistent scoring. Use clearExisting = true to overwrite the current engine state with the imported one."""
+                        }
+                    }
+                }
+
+                is TypeaheadPayload -> {
+                    addRecordToBuffer(bufferMap, firstItem)
+                }
+            }
+        }
+
+        // 2. Consume the remaining records (payload entries)
+        iterator.forEach { item ->
+            if (item is TypeaheadPayload) {
+                addRecordToBuffer(bufferMap, item)
+            }
+        }
+    }
+
+    val persistentBuffer = bufferMap.toPersistentHashMap()
+
+    if (clearExisting) {
+        embeddings.value = persistentBuffer
+    } else {
+        embeddings.update { currentMap ->
+            var mergedMap = currentMap
+            persistentBuffer.forEach { (key, innerMap) ->
+                val existingInner = mergedMap[key] ?: persistentHashMapOf()
+                mergedMap = mergedMap.put(key, existingInner.putAll(innerMap))
+            }
+            mergedMap
+        }
     }
 }
