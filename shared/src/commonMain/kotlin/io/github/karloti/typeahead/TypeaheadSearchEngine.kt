@@ -357,7 +357,6 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
         return embeddings.value.values.flatMap { it.keys }
     }
 
-
     /**
      * Inserts a deserialized [TypeaheadPayload] into the mutable import buffer.
      *
