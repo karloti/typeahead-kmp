@@ -17,8 +17,10 @@
 import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.test.runTest
+import kotlinx.io.asSink
+import kotlinx.io.asSource
+import kotlinx.io.buffered
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,10 +38,9 @@ data class Product(
 class TypeaheadSearchEngineTestJava {
     /**
      * Performance and memory consumption test for TypeaheadSearchEngine import/export operations.
-     * 
-     * This test validates the complete lifecycle of serializing and deserializing a search engine
-     * containing 10,000 product records. It measures:
-     * - Memory consumption during insertion, export, file I/O, and import operations
+     * * This test validates the complete lifecycle of serializing and deserializing a search engine
+     * using streaming file I/O. It measures:
+     * - Memory consumption during insertion, streaming export, and streaming import operations
      * - Disk space used by the serialized JSON file
      * - Execution time for each major operation
      * - Data integrity through comparison of search results before and after serialization
@@ -47,7 +48,7 @@ class TypeaheadSearchEngineTestJava {
     @Test
     fun `test import and export with json file serialization`() = runTest(timeout = 1.minutes) {
         val targetSize = if (LOCAL) 10_000 else 1_000
-        val maxResults = if (LOCAL) 50 else 5
+        val maxResults = if (LOCAL) 40 else 5
 
         val query = "PQ82"
 
@@ -69,9 +70,10 @@ class TypeaheadSearchEngineTestJava {
             }
         }
 
-        val searchEngine = TypeaheadSearchEngine<Product>(maxResults = maxResults) { product ->
-            product.name
-        }
+        val searchEngine =
+            TypeaheadSearchEngine<Product>(
+                metadata = TypeaheadRecord.TypeaheadMetadata(maxResults = maxResults)
+            ) { product -> product.name }
 
         println("⏳ Starting insertion of $targetSize products...")
         val runtime = Runtime.getRuntime()
@@ -101,90 +103,53 @@ class TypeaheadSearchEngineTestJava {
         // Capture search results before export for comparison
         val resultsBeforeExport = searchEngine.find(query)
 
-        // Export the search engine
-        println("⏳ Starting export of search engine state...")
+        // ---------------------------------------------------------
+        // STREAMING EXPORT
+        // ---------------------------------------------------------
+        println("⏳ Starting streaming export of search engine state to file...")
+        val tempFile = File.createTempFile("typeahead_export_", ".json")
+
         runtime.gc()
         Thread.sleep(100)
 
         val memoryBeforeExport = runtime.totalMemory() - runtime.freeMemory()
         val exportStartTime = System.currentTimeMillis()
 
-        val exportedRecords = searchEngine.exportAsSequence().toList()
+        // Създаваме Sink от файла и експортираме директно
+        tempFile.outputStream().asSink().use { sink ->
+            searchEngine.exportToSink(sink.buffered(), Product.serializer())
+        }
 
         val exportEndTime = System.currentTimeMillis()
         val memoryAfterExport = runtime.totalMemory() - runtime.freeMemory()
 
         val exportTime = exportEndTime - exportStartTime
         val exportMemoryUsed = memoryAfterExport - memoryBeforeExport
-
-        println("✅ Export completed in $exportTime ms")
-        println("📊 Memory used for export: ${exportMemoryUsed / 1024 / 1024} MB")
-
-        assertEquals(targetSize, exportedRecords.size, "Exported records should contain exactly $targetSize items.")
-
-        // Serialize to JSON and write to file
-        println("⏳ Serializing records to JSON and writing to file...")
-        val json = Json { prettyPrint = true }
-
-        val serializationStartTime = System.currentTimeMillis()
-        val jsonString = json.encodeToString(exportedRecords)
-        val serializationEndTime = System.currentTimeMillis()
-
-        val tempFile = File.createTempFile("typeahead_export_", ".json")
-
-        val writeStartTime = System.currentTimeMillis()
-        tempFile.writeText(jsonString)
-        val writeEndTime = System.currentTimeMillis()
-
         val fileSize = tempFile.length()
 
+        println("✅ Streaming export completed in $exportTime ms")
         println("✅ Written to file: ${tempFile.absolutePath}")
-        println("✅ Serialization completed in ${serializationEndTime - serializationStartTime} ms")
-        println("✅ File write completed in ${writeEndTime - writeStartTime} ms")
         println("💾 File size on disk: ${fileSize / 1024 / 1024} MB (${fileSize / 1024} KB)")
+        println("📊 Memory used for streaming export: ${exportMemoryUsed / 1024 / 1024} MB")
 
-        // Read from file and deserialize
-        println("⏳ Reading from file and deserializing JSON...")
-        runtime.gc()
-        Thread.sleep(100)
+        // ---------------------------------------------------------
+        // STREAMING IMPORT
+        // ---------------------------------------------------------
+        val newSearchEngine = TypeaheadSearchEngine<Product>(
+            metadata = TypeaheadRecord.TypeaheadMetadata(maxResults = maxResults)
+        ) { product -> product.name }
 
-        val memoryBeforeRead = runtime.totalMemory() - runtime.freeMemory()
-        val readStartTime = System.currentTimeMillis()
-
-        val jsonFromFile = tempFile.readText()
-
-        val readEndTime = System.currentTimeMillis()
-
-        val deserializationStartTime = System.currentTimeMillis()
-        val deserializedRecords: List<TypeaheadRecord<Product>> = json.decodeFromString(jsonFromFile)
-        val deserializationEndTime = System.currentTimeMillis()
-
-        val memoryAfterRead = runtime.totalMemory() - runtime.freeMemory()
-
-        val readTime = readEndTime - readStartTime
-        val deserializationTime = deserializationEndTime - deserializationStartTime
-        val readMemoryUsed = memoryAfterRead - memoryBeforeRead
-
-        println("✅ File read completed in $readTime ms")
-        println("✅ Deserialization completed in $deserializationTime ms")
-        println("📊 Memory used for read and deserialization: ${readMemoryUsed / 1024 / 1024} MB")
-
-        // Clean up temp file
-        tempFile.delete()
-
-        // Import into a new search engine
-        val newSearchEngine = TypeaheadSearchEngine<Product>(maxResults = maxResults) { product ->
-            product.name
-        }
-
-        println("⏳ Starting import of $targetSize records into new search engine...")
+        println("⏳ Starting streaming import from file into new search engine...")
         runtime.gc()
         Thread.sleep(100)
 
         val memoryBeforeImport = runtime.totalMemory() - runtime.freeMemory()
         val importStartTime = System.currentTimeMillis()
 
-        newSearchEngine.importFromSequence(deserializedRecords.asSequence())
+        // Създаваме Source от файла и импортираме директно
+        tempFile.inputStream().asSource().use { source ->
+            newSearchEngine.importFromSource(source.buffered(), Product.serializer())
+        }
 
         val importEndTime = System.currentTimeMillis()
         val memoryAfterImport = runtime.totalMemory() - runtime.freeMemory()
@@ -192,8 +157,11 @@ class TypeaheadSearchEngineTestJava {
         val importTime = importEndTime - importStartTime
         val importMemoryUsed = memoryAfterImport - memoryBeforeImport
 
-        println("✅ Import completed in $importTime ms")
-        println("📊 Memory used for import: ${importMemoryUsed / 1024 / 1024} MB")
+        println("✅ Streaming import completed in $importTime ms")
+        println("📊 Memory used for streaming import: ${importMemoryUsed / 1024 / 1024} MB")
+
+        // Clean up temp file
+//        tempFile.delete()
 
         assertEquals(targetSize, newSearchEngine.size, "Imported engine should contain exactly $targetSize products.")
 
@@ -226,17 +194,13 @@ class TypeaheadSearchEngineTestJava {
         println("✅ Import verification completed successfully - all results are identical!")
 
         println("\n" + "=".repeat(80))
-        println("PERFORMANCE SUMMARY")
+        println("PERFORMANCE SUMMARY (STREAMING)")
         println("=".repeat(80))
-        println("Insertion:        $insertionTime ms | Memory: ${insertionMemoryUsed / 1024 / 1024} MB")
-        println("Export:           $exportTime ms | Memory: ${exportMemoryUsed / 1024 / 1024} MB")
-        println("Serialization:    ${serializationEndTime - serializationStartTime} ms")
-        println("File Write:       ${writeEndTime - writeStartTime} ms | Disk: ${fileSize / 1024 / 1024} MB")
-        println("File Read:        $readTime ms")
-        println("Deserialization:  $deserializationTime ms | Memory: ${readMemoryUsed / 1024 / 1024} MB")
-        println("Import:           $importTime ms | Memory: ${importMemoryUsed / 1024 / 1024} MB")
+        println("Insertion:              $insertionTime ms | Memory: ${insertionMemoryUsed / 1024 / 1024} MB")
+        println("Streaming Export (I/O): $exportTime ms | Memory: ${exportMemoryUsed / 1024 / 1024} MB | Disk: ${fileSize / 1024 / 1024} MB")
+        println("Streaming Import (I/O): $importTime ms | Memory: ${importMemoryUsed / 1024 / 1024} MB")
         println("=".repeat(80))
-        println("Total Time:       ${insertionTime + exportTime + (serializationEndTime - serializationStartTime) + (writeEndTime - writeStartTime) + readTime + deserializationTime + importTime} ms")
+        println("Total Time:             ${insertionTime + exportTime + importTime} ms")
         println("=".repeat(80))
     }
 }

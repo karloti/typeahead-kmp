@@ -14,18 +14,29 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+@file:OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class, ExperimentalSerializationApi::class)
 
 package io.github.karloti.typeahead
 
 import io.github.karloti.cpq.ConcurrentPriorityQueue
-import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.FIND_BATCH_SIZE
+import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadMetadata
+import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadPayload
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentHashMapOf
 import kotlinx.collections.immutable.toPersistentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.io.Sink
+import kotlinx.io.Source
+import kotlinx.io.buffered
+import kotlinx.io.writeString
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.json.DecodeSequenceMode
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.io.decodeSourceToSequence
+import kotlinx.serialization.serializer
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -40,36 +51,19 @@ import kotlin.math.sqrt
  * @param T The type of elements held in this engine.
  * @param K The type of unique key used to identify each element.
  * @param defaultDispatcher The coroutine dispatcher used for heavy computational vectorization. Defaults to [Dispatchers.Default].
- * @param ignoreCase Whether to ignore character casing during search and tokenization. Defaults to `true`.
- * @param maxNgramSize The maximum size of N-grams to extract for floating positional matching. Defaults to 4.
- * @param anchorWeight The weight applied to the first character match (P0 Anchor). Defaults to 10.0.
- * @param lengthWeight The weight applied to the exact length bucket match. Defaults to 8.0.
- * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor (matching first, last, and length). Defaults to 15.0.
- * @param prefixWeight The weight for strict prefix matching. Defaults to 6.0.
- * @param fuzzyWeight The weight for fuzzy prefix matching (transposition tolerant). Defaults to 5.0.
- * @param skipWeight The weight for skip-gram matching (insertion/deletion tolerant). Defaults to 4.0.
- * @param floatingWeight The weight for floating N-gram matching. Defaults to 2.5.
  * @param textSelector A lambda function that extracts the searchable textual representation from your object [T]. Defaults to `toString()`.
  * @param uniqueKeySelector A lambda function that extracts a unique key for each element [T]. Defaults to `it`.
  */
-class TypeaheadSearchEngine<T, K>(
-    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    private val ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
-    private val maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
-    private val anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
-    private val lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
-    private val gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
-    private val prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
-    private val fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
-    private val skipWeight: Float = DEFAULT_SKIP_WEIGHT,
-    private val floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
-    private val maxResults: Int = DEFAULT_MAX_RESULTS,
-    private val textSelector: (T) -> String = { it.toString() },
+
+class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
+    private val defaultDispatcher: CoroutineDispatcher,
+    private val metadata: TypeaheadMetadata,
+    @PublishedApi internal val textSelector: (T) -> String,
     private val uniqueKeySelector: (T) -> K,
 ) {
-
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
-    private val _embeddings =
+    @PublishedApi
+    internal val _embeddings =
         MutableStateFlow<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentHashMapOf())
     private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
     val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
@@ -79,14 +73,14 @@ class TypeaheadSearchEngine<T, K>(
     /**
      * Finds the top matching elements for the given query using Cosine Similarity.
      *
-     * For most datasets a sequential scan with cooperative [yield] is optimal because
-     * the two-pointer [dotProduct] is sub-microsecond and coroutine overhead dominates.
+     * This method vectorizes the query string and performs a high-performance dot-product
+     * calculation against all indexed embeddings. It maintains a fixed-size priority queue
+     * to efficiently track the top results based on their similarity scores.
      *
-     * For very large indices (millions of embeddings), set [concurrencyLevel] > 1 to
-     * distribute dot-product work across [FIND_BATCH_SIZE]-sized chunks via [flatMapMerge].
-     * Note: parallel mode may produce non-deterministic ordering among equal-score results.
+     * Upon completion, it updates the [results] and [highlightedResults] StateFlows.
      *
      * @param query The user's input string to search for.
+     * @throws CancellationException if the coroutine scope is cancelled during execution.
      * @return A sorted list of pairs containing the matched object and its similarity score [0.0 - 1.0].
      */
     suspend fun find(
@@ -97,7 +91,7 @@ class TypeaheadSearchEngine<T, K>(
         val queryVector = query.toPositionalEmbedding()
 
         val topResultsQueue = ConcurrentPriorityQueue<Pair<T, Float>, K>(
-            maxSize = maxResults,
+            maxSize = metadata.maxResults,
             comparator = compareByDescending { it.second },
             uniqueKeySelector = { uniqueKeySelector(it.first) }
         )
@@ -118,7 +112,7 @@ class TypeaheadSearchEngine<T, K>(
             val targetText = textSelector(match.first)
             val heatmap = query.computeHeatmap(
                 targetStr = targetText,
-                ignoreCase = ignoreCase,
+                ignoreCase = metadata.ignoreCase,
             )
             HighlightedMatch(
                 item = match.first,
@@ -139,7 +133,7 @@ class TypeaheadSearchEngine<T, K>(
      *
      * @param item The domain object to index.
      */
-    suspend fun add(item: T) = withContext(defaultDispatcher) {
+    suspend fun add(item: T): Unit = withContext(defaultDispatcher) {
         val stringToVectorize = textSelector(item)
         val vector = stringToVectorize.toPositionalEmbedding()
 
@@ -284,43 +278,131 @@ class TypeaheadSearchEngine<T, K>(
     }
 
     /**
-     * Exports the current state of the search engine as a lazy [Sequence].
-     * * By utilizing a sequence, the export process is stream-based and highly memory-efficient,
-     * preventing OutOfMemory errors when handling massive datasets. The consumer of this
-     * sequence is responsible for the actual byte-level serialization (e.g., JSON, ProtoBuf).
-     *
-     * @return A lazy sequence containing [TypeaheadRecord] objects.
+     * Извлича текущото състояние на търсачката в поточен формат към [Sink].
+     * Записът е базиран на стрийминг, което гарантира нулев риск от OutOfMemory грешки.
      */
-    fun exportAsSequence(): Sequence<TypeaheadRecord<T>> {
-        return _embeddings
-            .value
-            .values
-            .asSequence()
-            .flatMap { it.entries }
-            .map { entry -> TypeaheadRecord(item = entry.key, vector = entry.value) }
+    fun exportToSink(
+        sink: Sink,
+        itemSerializer: KSerializer<T>,
+        json: Json = Json {
+            encodeDefaults = true
+            ignoreUnknownKeys = true
+        }
+    ) {
+        // Създаваме полиморфния сериализатор на базата на интерфейса
+        val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
+
+        sink.buffered().use { bufferedSink ->
+            // Отваряме JSON масива
+            bufferedSink.writeString("[\n")
+
+            // 1. Записваме метаданните като първи елемент
+            val metadata = TypeaheadMetadata(
+                ignoreCase = metadata.ignoreCase,
+                maxNgramSize = metadata.maxNgramSize,
+                anchorWeight = metadata.anchorWeight,
+                lengthWeight = metadata.lengthWeight,
+                gestaltWeight = metadata.gestaltWeight,
+                prefixWeight = metadata.prefixWeight,
+                fuzzyWeight = metadata.fuzzyWeight,
+                skipWeight = metadata.skipWeight,
+                floatingWeight = metadata.floatingWeight,
+                maxResults = metadata.maxResults
+            )
+            val metaString = json.encodeToString(polymorphicSerializer, metadata)
+            bufferedSink.writeString("  $metaString")
+
+            // 2. Итерираме и записваме всички записи един по един (мързеливо)
+            _embeddings.value.values
+                .asSequence()
+                .flatMap { it.entries }
+                .forEach { entry ->
+                    bufferedSink.writeString(",\n")
+                    val payload = TypeaheadPayload(item = entry.key, vector = entry.value)
+                    val payloadString = json.encodeToString(polymorphicSerializer, payload)
+                    bufferedSink.writeString("  $payloadString")
+                }
+
+            // Затваряме JSON масива
+            bufferedSink.writeString("\n]")
+        }
     }
 
     /**
-     * Restores or merges the search engine's state from a streamed [Sequence] of records.
-     * * This bypasses the heavy mathematical vectorization process by loading pre-computed
-     * embeddings directly into memory.
-     *
-     * @param records A lazy sequence of [TypeaheadRecord] elements to be loaded.
-     * @param clearExisting If true, completely replaces the current state. If false, merges with existing data.
+     * Възстановява състоянието на търсачката чрез мързеливо четене от [Source].
+     * Байпасва математическата векторизация.
      */
-    fun importFromSequence(records: Sequence<TypeaheadRecord<T>>, clearExisting: Boolean = true) {
+    @Suppress("UNCHECKED_CAST")
+    inline fun <reified A> importFromSource(
+        source: Source,
+        itemSerializer: KSerializer<A> = serializer<A>(),
+        clearExisting: Boolean = true,
+        json: Json = Json {
+            encodeDefaults = true
+            ignoreUnknownKeys = true
+        }
+    ) {
+        val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
+        val bufferMap = mutableMapOf<String, PersistentMap<A, SparseVector>>()
 
-        val bufferMap = records.associate { record ->
-            val stringKey = textSelector(record.item)
-            stringKey to persistentHashMapOf(record.item to record.vector)
-        }.toPersistentHashMap()
+        source.buffered().use { bufferedSource ->
+            val sequence = json.decodeSourceToSequence(
+                source = bufferedSource,
+                deserializer = polymorphicSerializer,
+                format = DecodeSequenceMode.ARRAY_WRAPPED
+            )
+
+            val iterator = sequence.iterator()
+
+            // 1. КОНСУМИРАНЕ НА ПЪРВИЯ ЗАПИС (Метаданни)
+            if (iterator.hasNext()) {
+                when (val firstItem = iterator.next()) {
+                    is TypeaheadMetadata -> {
+                        // Тук може да се добави логика за валидация - например да се хвърли
+                        // грешка или предупреждение, ако firstItem.maxNgramSize се различава
+                        // от текущите настройки на енджина, тъй като това би счупило търсенето.
+                    }
+
+                    is TypeaheadPayload -> {
+                        addRecordToBuffer(bufferMap, firstItem)
+                    }
+                }
+            }
+
+            // 2. КОНСУМИРАНЕ НА ОСТАНАЛИТЕ ЗАПИСИ (Полезен товар)
+            iterator.forEach { item ->
+                if (item is TypeaheadPayload) {
+                    addRecordToBuffer(bufferMap, item)
+                }
+            }
+        }
+
+        val persistentBuffer = bufferMap.toPersistentHashMap()
 
         if (clearExisting) {
             _embeddings.value.clear()
-            _embeddings.value = bufferMap
+            _embeddings.value = persistentBuffer as PersistentMap<String, PersistentMap<T, SparseVector>>
         } else {
-            _embeddings.update { currentMap -> currentMap.putAll(bufferMap) }
+            _embeddings.update { currentMap ->
+                var mergedMap = currentMap
+                persistentBuffer.forEach { (key, innerMap) ->
+                    val existingInner = mergedMap[key] ?: persistentHashMapOf()
+                    mergedMap = mergedMap.put(key, existingInner.putAll(innerMap as PersistentMap<T, SparseVector>))
+                }
+                mergedMap
+            }
         }
+    }
+
+    @PublishedApi
+    @Suppress("UNCHECKED_CAST")
+    internal inline fun <reified A> addRecordToBuffer(
+        buffer: MutableMap<String, PersistentMap<A, SparseVector>>,
+        payload: TypeaheadPayload<A>
+    ) {
+        val stringKey = textSelector(payload.item as T)
+        val existingMap = buffer[stringKey] ?: persistentHashMapOf()
+        buffer[stringKey] = existingMap.put(payload.item, payload.vector)
     }
 
     /**
@@ -342,16 +424,16 @@ class TypeaheadSearchEngine<T, K>(
 
         // 1. P0 Anchor (Absolute foundation)
         // The first letter is highly reliable in typeahead scenarios.
-        vector["A_${word[0]}"] = anchorWeight
+        vector["A_${word[0]}"] = metadata.anchorWeight
 
         // 2. Length Bucket (Length synchronizer)
         // Elevates words with the exact same length during typographical errors.
-        vector["L_$length"] = lengthWeight
+        vector["L_$length"] = metadata.lengthWeight
 
         // 3. Typoglycemia Gestalt Anchor
         // Captures perfectly 1-character typos where the length, first, and last characters match.
         if (length > 1) {
-            vector["G_${word[0]}_${length}_${word.last()}"] = gestaltWeight
+            vector["G_${word[0]}_${length}_${word.last()}"] = metadata.gestaltWeight
         }
 
         // 4. Strict & Fuzzy Prefixes (The core of Typeahead)
@@ -359,13 +441,13 @@ class TypeaheadSearchEngine<T, K>(
             val prefix = word.substring(0, i)
 
             // Strict Prefix: Rewards perfect typing sequence.
-            vector["P_$prefix"] = i * prefixWeight
+            vector["P_$prefix"] = i * metadata.prefixWeight
 
             if (i >= 2) {
                 // Fuzzy Prefix: Mitigates transpositions (e.g., "Cna" vs "Canada").
                 // Anchors the first character and sorts the remainder of the prefix.
                 val sortedRest = prefix.substring(1).toCharArray().apply { sort() }.joinToString("")
-                vector["F_${word[0]}_$sortedRest"] = i * fuzzyWeight
+                vector["F_${word[0]}_$sortedRest"] = i * metadata.fuzzyWeight
             }
             yield()
         }
@@ -373,16 +455,16 @@ class TypeaheadSearchEngine<T, K>(
         // 5. Skip-Grams (Bridge for deletions and insertions)
         for (i in 0 until length - 2) {
             val skipKey = "${word[i]}${word[i + 2]}"
-            vector[skipKey] = (vector[skipKey] ?: 0.0f) + skipWeight
+            vector[skipKey] = (vector[skipKey] ?: 0.0f) + metadata.skipWeight
         }
 
         // 6. Floating N-Grams (The structural skeleton)
         for (i in 0 until length) {
-            for (n in 2..maxNgramSize) {
+            for (n in 2..metadata.maxNgramSize) {
                 if (i + n <= length) {
                     val ngram = word.substring(i, i + n)
                     // Linear progression for weights avoids complex branching operations.
-                    val weight = n * floatingWeight
+                    val weight = n * metadata.floatingWeight
                     vector[ngram] = (vector[ngram] ?: 0.0f) + weight
                 }
             }
@@ -442,45 +524,18 @@ class TypeaheadSearchEngine<T, K>(
          *
          * @param items Initial elements to populate the engine. Defaults to an empty list.
          * @param defaultDispatcher The coroutine dispatcher used for background processing.
-         * @param ignoreCase Whether the search should be case-insensitive.
-         * @param maxNgramSize The maximum size of N-grams to generate for fuzzy matching.
-         * @param anchorWeight The weight applied to exact anchor matches.
-         * @param lengthWeight The weight applied to length similarity.
-         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
-         * @param prefixWeight The weight for strict prefix matching.
-         * @param fuzzyWeight The weight for fuzzy prefix matching.
-         * @param skipWeight The weight for skip-gram matching.
-         * @param floatingWeight The weight for floating N-gram matching.
          * @param textSelector A lambda function that converts an element [T] into a searchable string.
          * @param uniqueKeySelector A lambda function that extracts a unique identity key from an element [T].
          */
-        suspend operator fun <T, K> invoke(
+        suspend inline operator fun <reified T, reified K> invoke(
             items: Iterable<T> = emptyList(),
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
-            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
-            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
-            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
-            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
-            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
-            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
-            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
-            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
-            maxResults: Int = DEFAULT_MAX_RESULTS,
-            textSelector: (T) -> String,
-            uniqueKeySelector: (T) -> K
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
+            noinline textSelector: (T) -> String,
+            noinline uniqueKeySelector: (T) -> K
         ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
             defaultDispatcher = defaultDispatcher,
-            ignoreCase = ignoreCase,
-            maxNgramSize = maxNgramSize,
-            anchorWeight = anchorWeight,
-            lengthWeight = lengthWeight,
-            gestaltWeight = gestaltWeight,
-            prefixWeight = prefixWeight,
-            fuzzyWeight = fuzzyWeight,
-            skipWeight = skipWeight,
-            floatingWeight = floatingWeight,
-            maxResults = maxResults,
+            metadata = metadata,
             uniqueKeySelector = uniqueKeySelector,
             textSelector = textSelector
         ).apply { addAll(items) }
@@ -492,33 +547,15 @@ class TypeaheadSearchEngine<T, K>(
          * @param items Initial elements to populate the engine. Defaults to an empty list.
          * @param textSelector A lambda function that converts an element [T] into a searchable string. Defaults to calling `toString()`.
          */
-        suspend operator fun <T> invoke(
+        suspend inline operator fun <reified T> invoke(
             items: Iterable<T> = emptyList(),
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
-            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
-            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
-            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
-            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
-            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
-            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
-            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
-            maxResults: Int = DEFAULT_MAX_RESULTS,
-            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
-            textSelector: (T) -> String = { it.toString() }
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
+            noinline textSelector: (T) -> String = { it.toString() }
         ): TypeaheadSearchEngine<T, T> = invoke(
             items = items,
             defaultDispatcher = defaultDispatcher,
-            ignoreCase = ignoreCase,
-            maxNgramSize = maxNgramSize,
-            anchorWeight = anchorWeight,
-            lengthWeight = lengthWeight,
-            gestaltWeight = gestaltWeight,
-            prefixWeight = prefixWeight,
-            fuzzyWeight = fuzzyWeight,
-            skipWeight = skipWeight,
-            floatingWeight = floatingWeight,
-            maxResults = maxResults,
+            metadata = metadata,
             textSelector = textSelector,
             uniqueKeySelector = { it }
         )
@@ -529,45 +566,18 @@ class TypeaheadSearchEngine<T, K>(
          *
          * @param items A stream of initial elements to populate the engine concurrently.
          * @param defaultDispatcher The coroutine dispatcher for background tasks.
-         * @param ignoreCase Whether to ignore character casing during search.
-         * @param maxNgramSize The maximum size of N-grams to extract.
-         * @param anchorWeight The weight applied to the first character match.
-         * @param lengthWeight The weight applied to length similarity.
-         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
-         * @param prefixWeight The weight for strict prefix matching.
-         * @param fuzzyWeight The weight for fuzzy prefix matching.
-         * @param skipWeight The weight for skip-gram matching.
-         * @param floatingWeight The weight for floating N-gram matching.
          * @param textSelector Lambda to extract searchable text from the items.
          * @param uniqueKeySelector A lambda function that extracts a unique identity key from an element [T].
          */
-        suspend operator fun <T, K> invoke(
+        suspend inline operator fun <reified T, reified K> invoke(
             items: Flow<T>,
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
-            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
-            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
-            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
-            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
-            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
-            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
-            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
-            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
-            maxResults: Int = DEFAULT_MAX_RESULTS,
-            textSelector: (T) -> String,
-            uniqueKeySelector: (T) -> K
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
+            noinline textSelector: (T) -> String,
+            noinline uniqueKeySelector: (T) -> K
         ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
             defaultDispatcher = defaultDispatcher,
-            ignoreCase = ignoreCase,
-            maxNgramSize = maxNgramSize,
-            anchorWeight = anchorWeight,
-            lengthWeight = lengthWeight,
-            gestaltWeight = gestaltWeight,
-            prefixWeight = prefixWeight,
-            fuzzyWeight = fuzzyWeight,
-            skipWeight = skipWeight,
-            floatingWeight = floatingWeight,
-            maxResults = maxResults,
+            metadata = metadata,
             uniqueKeySelector = uniqueKeySelector,
             textSelector = textSelector,
         ).apply { addAll(items) { it } }
@@ -578,44 +588,17 @@ class TypeaheadSearchEngine<T, K>(
          *
          * @param items A stream of initial elements to populate the engine concurrently.
          * @param defaultDispatcher The coroutine dispatcher for background tasks.
-         * @param ignoreCase Whether to ignore character casing during search.
-         * @param maxNgramSize The maximum size of N-grams to extract.
-         * @param anchorWeight The weight applied to the first character match.
-         * @param lengthWeight The weight applied to length similarity.
-         * @param gestaltWeight The weight for the Typoglycemia Gestalt anchor.
-         * @param prefixWeight The weight for strict prefix matching.
-         * @param fuzzyWeight The weight for fuzzy prefix matching.
-         * @param skipWeight The weight for skip-gram matching.
-         * @param floatingWeight The weight for floating N-gram matching.
          * @param textSelector Lambda to extract searchable text from the items. Defaults to calling `toString()`.
          */
-        suspend operator fun <T> invoke(
+        suspend inline operator fun <reified T> invoke(
             items: Flow<T>,
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            ignoreCase: Boolean = DEFAULT_IGNORE_CASE,
-            maxNgramSize: Int = DEFAULT_MAX_NGRAM_SIZE,
-            anchorWeight: Float = DEFAULT_ANCHOR_WEIGHT,
-            lengthWeight: Float = DEFAULT_LENGTH_WEIGHT,
-            gestaltWeight: Float = DEFAULT_GESTALT_WEIGHT,
-            prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
-            fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
-            skipWeight: Float = DEFAULT_SKIP_WEIGHT,
-            floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
-            maxResults: Int = DEFAULT_MAX_RESULTS,
-            textSelector: (T) -> String = { it.toString() }
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
+            noinline textSelector: (T) -> String = { it.toString() }
         ): TypeaheadSearchEngine<T, T> = invoke(
             items = items,
             defaultDispatcher = defaultDispatcher,
-            ignoreCase = ignoreCase,
-            maxNgramSize = maxNgramSize,
-            anchorWeight = anchorWeight,
-            lengthWeight = lengthWeight,
-            gestaltWeight = gestaltWeight,
-            prefixWeight = prefixWeight,
-            fuzzyWeight = fuzzyWeight,
-            skipWeight = skipWeight,
-            floatingWeight = floatingWeight,
-            maxResults = maxResults,
+            metadata = metadata,
             textSelector = textSelector,
             uniqueKeySelector = { it }
         )
@@ -628,14 +611,14 @@ class TypeaheadSearchEngine<T, K>(
          * @param textSelector Lambda to extract searchable text from the items. Defaults to `toString()`.
          * @param uniqueKeySelector Lambda to extract a unique key for each element.
          */
-        suspend operator fun <T, K> invoke(
+        suspend inline operator fun <reified T, reified K> invoke(
             items: Iterable<T>,
-            maxResults: Int = DEFAULT_MAX_RESULTS,
-            textSelector: (T) -> String = { it.toString() },
-            uniqueKeySelector: (T) -> K,
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
+            noinline textSelector: (T) -> String = { it.toString() },
+            noinline uniqueKeySelector: (T) -> K,
         ): TypeaheadSearchEngine<T, K> = invoke(
             items = items,
-            maxResults = maxResults,
+            metadata = metadata,
             textSelector = textSelector,
             uniqueKeySelector = uniqueKeySelector,
             defaultDispatcher = Dispatchers.Default

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadMetadata
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.test.runTest
@@ -75,7 +76,7 @@ class FindBenchmarkTest {
 
         for (size in sizes) {
             val items = generateItems(size)
-            val engine = TypeaheadSearchEngine<String>(maxResults = 20)
+            val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 20))
 
             val elapsed = measureTime { engine.addAll(items) }
             assertEquals(size, engine.size)
@@ -107,7 +108,7 @@ class FindBenchmarkTest {
 
         val items = generateItems(size).asFlow()
 
-        val engine = TypeaheadSearchEngine<String, String>(maxResults = 20) { it }
+        val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 20)) { it }
 
         val elapsed = measureTime { engine.addAll(items) { it } }
         assertEquals(size, engine.size)
@@ -129,7 +130,7 @@ class FindBenchmarkTest {
     @Test
     fun `benchmark sequential vs parallel find`() = runTest(timeout = 5.minutes) {
         val items = generateItems(datasetSize)
-        val engine = TypeaheadSearchEngine<String>(maxResults = 20)
+        val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 20))
         engine.addAll(items)
         assertEquals(datasetSize, engine.size)
 
@@ -165,7 +166,7 @@ class FindBenchmarkTest {
 
         for (size in sizes) {
             val items = generateItems(size)
-            val engine = TypeaheadSearchEngine<String>(maxResults = 20)
+            val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 20))
             engine.addAll(items)
 
             val seqTime = benchmarkFind(engine, query)
@@ -185,7 +186,7 @@ class FindBenchmarkTest {
     fun `benchmark find throughput queries per second`() = runTest(timeout = 1.minutes) {
         val size = if (LOCAL) 200_000 else 3_000
         val items = generateItems(size)
-        val engine = TypeaheadSearchEngine<String>(maxResults = 10)
+        val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 10))
         engine.addAll(items)
 
         val queries = listOf("Pro", "Premium Elec", "Budget Food Item", "Ultra")
@@ -227,7 +228,7 @@ class FindBenchmarkTest {
 
         // ── addAll ──
         val items = generateItems(largeDatasetSize)
-        val engine = TypeaheadSearchEngine<String>(maxResults = 50)
+        val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 50))
 
         val insertTime = measureTime { engine.addAll(items) }
         assertEquals(largeDatasetSize, engine.size)
@@ -274,7 +275,7 @@ class FindBenchmarkTest {
     @Test
     fun `verify parallel find returns same top scores as sequential`() = runTest(timeout = 5.minutes) {
         val items = generateItems(datasetSize)
-        val engine = TypeaheadSearchEngine<String>(maxResults = 20)
+        val engine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 20))
         engine.addAll(items)
 
         val queries = listOf("Premium", "Budget Food", "Ultra Sports", "Mini", "Pro Electronics Item")

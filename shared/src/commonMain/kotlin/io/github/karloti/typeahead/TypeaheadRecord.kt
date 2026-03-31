@@ -16,18 +16,54 @@
 
 package io.github.karloti.typeahead
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Represents a single serialized record of the search engine's state.
- * This Data Transfer Object (DTO) bridges the internal vector space with external storage.
- *
- * @param T The type of the user-defined element.
- * @param item The original element stored in the engine.
- * @param vector The pre-computed, L2-normalized sparse vector for this element.
- */
 @Serializable
-data class TypeaheadRecord<T>(
-    val item: T,
-    val vector: SparseVector
-)
+sealed interface TypeaheadRecord<out T> {
+
+    /**
+     * Represents a single serialized record of the search engine's state.
+     * This Data Transfer Object (DTO) bridges the internal vector space with external storage.
+     *
+     * @param T The type of the user-defined element.
+     * @param item The original element stored in the engine.
+     * @param vector The pre-computed, L2-normalized sparse vector for this element.
+     */
+    @Serializable
+    @SerialName("payload")
+    data class TypeaheadPayload<T>(
+        val item: T,
+        val vector: SparseVector
+    ) : TypeaheadRecord<T>
+
+    /**
+     * Configuration settings for the [TypeaheadSearchEngine] that control the behavior and weighting of the fuzzy search algorithm.
+     *
+     * @property ignoreCase Whether to ignore character casing during search and tokenization. Defaults to `true`.
+     * @property maxNgramSize The maximum size of N-grams to extract for floating positional matching. Defaults to 4.
+     * @property anchorWeight The weight applied to the first character match (P0 Anchor). Defaults to 10.0.
+     * @property lengthWeight The weight applied to the exact length bucket match. Defaults to 8.0.
+     * @property gestaltWeight The weight for the Typoglycemia Gestalt anchor (matching first, last, and length). Defaults to 15.0.
+     * @property prefixWeight The weight for strict prefix matching. Defaults to 6.0.
+     * @property fuzzyWeight The weight for fuzzy prefix matching (transposition tolerant). Defaults to 5.0.
+     * @property skipWeight The weight for skip-gram matching (insertion/deletion tolerant). Defaults to 4.0.
+     * @property floatingWeight The weight for floating N-gram matching. Defaults to 2.5.
+     * @property maxResults The maximum number of results to return from a search query. Defaults to 5.
+     */
+    @Serializable
+    @SerialName("metadata")
+    data class TypeaheadMetadata(
+        val ignoreCase: Boolean = TypeaheadSearchEngine.DEFAULT_IGNORE_CASE,
+        val maxNgramSize: Int = TypeaheadSearchEngine.DEFAULT_MAX_NGRAM_SIZE,
+        val anchorWeight: Float = TypeaheadSearchEngine.DEFAULT_ANCHOR_WEIGHT,
+        val lengthWeight: Float = TypeaheadSearchEngine.DEFAULT_LENGTH_WEIGHT,
+        val gestaltWeight: Float = TypeaheadSearchEngine.DEFAULT_GESTALT_WEIGHT,
+        val prefixWeight: Float = TypeaheadSearchEngine.DEFAULT_PREFIX_WEIGHT,
+        val fuzzyWeight: Float = TypeaheadSearchEngine.DEFAULT_FUZZY_WEIGHT,
+        val skipWeight: Float = TypeaheadSearchEngine.DEFAULT_SKIP_WEIGHT,
+        val floatingWeight: Float = TypeaheadSearchEngine.DEFAULT_FLOATING_WEIGHT,
+        val maxResults: Int = TypeaheadSearchEngine.DEFAULT_MAX_RESULTS,
+    ): TypeaheadRecord<Nothing>
+
+}

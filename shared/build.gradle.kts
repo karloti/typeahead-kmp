@@ -138,6 +138,7 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.atomicfu)
             implementation(libs.karloti.concurrent.priority.queue)
+            implementation(libs.kotlinx.io.core)
         }
 
         commonTest.dependencies {
