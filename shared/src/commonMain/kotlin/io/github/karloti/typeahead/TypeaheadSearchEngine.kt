@@ -18,13 +18,13 @@
 
 package io.github.karloti.typeahead
 
-import ConcurrentPriorityQueue
-import kotlinx.atomicfu.atomic
-import kotlinx.atomicfu.update
+import io.github.karloti.cpq.ConcurrentPriorityQueue
+import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.FIND_BATCH_SIZE
 import kotlinx.collections.immutable.PersistentMap
-import kotlinx.collections.immutable.persistentMapOf
-import kotlinx.collections.immutable.toPersistentMap
+import kotlinx.collections.immutable.persistentHashMapOf
+import kotlinx.collections.immutable.toPersistentHashMap
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlin.math.abs
 import kotlin.math.min
@@ -63,64 +63,71 @@ class TypeaheadSearchEngine<T, K>(
     private val fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
     private val skipWeight: Float = DEFAULT_SKIP_WEIGHT,
     private val floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+    private val maxResults: Int = DEFAULT_MAX_RESULTS,
     private val textSelector: (T) -> String = { it.toString() },
     private val uniqueKeySelector: (T) -> K,
 ) {
 
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
-    private val _embeddings = atomic<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentMapOf())
+    private val _embeddings =
+        MutableStateFlow<PersistentMap<String, PersistentMap<T, SparseVector>>>(persistentHashMapOf())
     private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
     val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
-    private val _highlightedResults = MutableStateFlow< List<HighlightedMatch<T>>>(emptyList())
+    private val _highlightedResults = MutableStateFlow<List<HighlightedMatch<T>>>(emptyList())
     val highlightedResults: StateFlow<List<HighlightedMatch<T>>> = _highlightedResults.asStateFlow()
 
     /**
      * Finds the top matching elements for the given query using Cosine Similarity.
-     * This operation yields the thread cooperatively during heavy vector dot-product
-     * computations to prevent blocking the UI thread on resource-constrained devices.
+     *
+     * For most datasets a sequential scan with cooperative [yield] is optimal because
+     * the two-pointer [dotProduct] is sub-microsecond and coroutine overhead dominates.
+     *
+     * For very large indices (millions of embeddings), set [concurrencyLevel] > 1 to
+     * distribute dot-product work across [FIND_BATCH_SIZE]-sized chunks via [flatMapMerge].
+     * Note: parallel mode may produce non-deterministic ordering among equal-score results.
      *
      * @param query The user's input string to search for.
-     * @param maxResults The maximum number of top results to return. Defaults to 5.
      * @return A sorted list of pairs containing the matched object and its similarity score [0.0 - 1.0].
      */
-    suspend fun find(query: String, maxResults: Int = DEFAULT_MAX_RESULTS): List<Pair<T, Float>> {
-        if (query.isBlank()) return emptyList()
+    suspend fun find(
+        query: String,
+    ): List<Pair<T, Float>> = withContext(defaultDispatcher) {
+        if (query.isBlank()) return@withContext emptyList()
 
-        return withContext(defaultDispatcher) {
-            val queryVector = query.toPositionalEmbedding()
+        val queryVector = query.toPositionalEmbedding()
 
-            val topResultsQueue = ConcurrentPriorityQueue<Pair<T, Float>, K>(
-                maxSize = maxResults,
-                comparator = compareByDescending { it.second },
-                uniqueKeySelector = { uniqueKeySelector(it.first) }
+        val topResultsQueue = ConcurrentPriorityQueue<Pair<T, Float>, K>(
+            maxSize = maxResults,
+            comparator = compareByDescending { it.second },
+            uniqueKeySelector = { uniqueKeySelector(it.first) }
+        )
+
+        topResultsQueue.addAll(
+            elements = _embeddings.value.values
+                .asSequence()
+                .flatMap { it.entries.asSequence() }
+                .asFlow(),
+            transform = { (item, targetVector) ->
+                val score = queryVector dotProduct targetVector
+                item to score
+            },
+        )
+
+        _results.value = topResultsQueue.items.value
+        _highlightedResults.value = topResultsQueue.items.value.map { match ->
+            val targetText = textSelector(match.first)
+            val heatmap = query.computeHeatmap(
+                targetStr = targetText,
+                ignoreCase = ignoreCase,
             )
-            _embeddings.value.values.forEach { entries ->
-                entries.forEach { (item, targetVector) ->
-                    val score = queryVector dotProduct targetVector
-                    if (score > 0.0) topResultsQueue.add(item to score)
-                    yield()
-                }
-            }
-
-            // TODO: check for race condition
-            _highlightedResults.value = topResultsQueue.items.value.map { match ->
-                val targetText = textSelector(match.first)
-                val heatmap = query.computeHeatmap(
-                    targetStr = targetText,
-                    ignoreCase = ignoreCase,
-                )
-
-                HighlightedMatch(
-                    item = match.first,
-                    score = match.second,
-                    heatmap = heatmap,
-                )
-            }
-
-            _results.value = topResultsQueue.items.value
-
-            topResultsQueue.items.value
+            HighlightedMatch(
+                item = match.first,
+                score = match.second,
+                heatmap = heatmap,
+            )
         }
+
+        topResultsQueue.items.value
     }
 
     /**
@@ -137,7 +144,7 @@ class TypeaheadSearchEngine<T, K>(
         val vector = stringToVectorize.toPositionalEmbedding()
 
         _embeddings.update { currentMap ->
-            currentMap.put(stringToVectorize, persistentMapOf(item to vector))
+            currentMap.put(stringToVectorize, persistentHashMapOf(item to vector))
         }
     }
 
@@ -150,14 +157,12 @@ class TypeaheadSearchEngine<T, K>(
      * this method utilizes [flatMapMerge] to achieve controlled, backpressured concurrency.
      *
      * @param items The collection of domain objects to be indexed.
-     * @param concurrencyLevel The maximum number of concurrent tokenization tasks.
      * Defaults to [DEFAULT_CONCURRENCY] (typically 16), which provides excellent
      * CPU saturation on mobile devices without context-switching overhead.
      */
     suspend fun addAll(
         items: Sequence<T>,
-        concurrencyLevel: Int = DEFAULT_CONCURRENCY
-    ) = addAll(items.asFlow(), concurrencyLevel)
+    ) = addAll(items.asFlow()) { it }
 
     /**
      * Batches multiple elements into the search engine's spatial index concurrently.
@@ -168,14 +173,12 @@ class TypeaheadSearchEngine<T, K>(
      * this method utilizes [flatMapMerge] to achieve controlled, backpressured concurrency.
      *
      * @param items The collection of domain objects to be indexed.
-     * @param concurrencyLevel The maximum number of concurrent tokenization tasks.
      * Defaults to [DEFAULT_CONCURRENCY] (typically 16), which provides excellent
      * CPU saturation on mobile devices without context-switching overhead.
      */
     suspend fun addAll(
         items: Iterable<T>,
-        concurrencyLevel: Int = DEFAULT_CONCURRENCY
-    ) = addAll(items.asFlow(), concurrencyLevel)
+    ) = addAll(items.asFlow()) { it }
 
     /**
      * Batches multiple elements into the search engine's spatial index concurrently.
@@ -186,32 +189,53 @@ class TypeaheadSearchEngine<T, K>(
      * this method utilizes [flatMapMerge] to achieve controlled, backpressured concurrency.
      *
      * @param items The collection of domain objects to be indexed.
-     * @param concurrencyLevel The maximum number of concurrent tokenization tasks.
      * Defaults to [DEFAULT_CONCURRENCY] (typically 16), which provides excellent
      * CPU saturation on mobile devices without context-switching overhead.
      */
-    suspend fun addAll(
-        items: Flow<T>,
-        concurrencyLevel: Int = DEFAULT_CONCURRENCY
+
+    suspend fun <S> addAll(
+        items: Flow<S>,
+        transform: suspend (S) -> T
     ) = withContext(defaultDispatcher) {
 
-        val computedEntries = mutableMapOf<String, PersistentMap<T, SparseVector>>()
+        val batchSize = FIND_BATCH_SIZE
+        val sourceChannel = Channel<S>(capacity = Channel.BUFFERED)
 
-        items.flatMapMerge(concurrency = concurrencyLevel) { item ->
-            flow {
-                val string = textSelector(item)
-                val embedding = string.toPositionalEmbedding()
-                emit(string to (item to embedding))
+        coroutineScope {
+            launch {
+                items.collect { sourceChannel.send(it) }
+                sourceChannel.close()
             }
-        }.collect { (stringKey, vectorPair) ->
-            computedEntries[stringKey] = persistentMapOf(vectorPair.first to vectorPair.second)
-        }
 
-        // 3. Perform a lightning-fast, atomic state update in O(1) time.
-        _embeddings.update { currentMap ->
-            currentMap.putAll(computedEntries)
+            repeat(DEFAULT_CONCURRENCY) {
+                launch {
+                    while (true) {
+                        val first = sourceChannel.receiveCatching().getOrNull() ?: break
+                        val batch = ArrayList<S>(batchSize)
+                        batch.add(first)
+                        while (batch.size < batchSize) {
+                            sourceChannel.tryReceive().getOrNull()?.let { batch.add(it) } ?: break
+                        }
+
+                        if (batch.size <= DEFAULT_CONCURRENCY) {
+                            batch.forEach {
+                                add(transform(it))
+                            }
+                        } else {
+                            coroutineScope {
+                                batch.forEach {
+                                    launch {
+                                        add(transform(it))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+
 
     /**
      * Removes a specific element and its vector embedding from the search engine.
@@ -230,7 +254,7 @@ class TypeaheadSearchEngine<T, K>(
      */
     fun clear() {
         _embeddings.value.clear()
-        _embeddings.value = persistentMapOf()
+        _embeddings.value = persistentHashMapOf()
     }
 
     /**
@@ -285,16 +309,15 @@ class TypeaheadSearchEngine<T, K>(
      * @param clearExisting If true, completely replaces the current state. If false, merges with existing data.
      */
     fun importFromSequence(records: Sequence<TypeaheadRecord<T>>, clearExisting: Boolean = true) {
-        val bufferMap = mutableMapOf<String, PersistentMap<T, SparseVector>>()
 
-        records.forEach { record ->
+        val bufferMap = records.associate { record ->
             val stringKey = textSelector(record.item)
-            bufferMap[stringKey] = persistentMapOf(record.item to record.vector)
-        }
+            stringKey to persistentHashMapOf(record.item to record.vector)
+        }.toPersistentHashMap()
 
         if (clearExisting) {
             _embeddings.value.clear()
-            _embeddings.value = bufferMap.toPersistentMap()
+            _embeddings.value = bufferMap
         } else {
             _embeddings.update { currentMap -> currentMap.putAll(bufferMap) }
         }
@@ -401,7 +424,6 @@ class TypeaheadSearchEngine<T, K>(
         internal const val EPSILON_FLOAT = 1e-7f
         internal const val TOLERANCE_FLOAT = 1e-6f
 
-        const val DEFAULT_CONCURRENCY = 16
         const val DEFAULT_IGNORE_CASE = true
         const val DEFAULT_MAX_NGRAM_SIZE = 4
         const val DEFAULT_ANCHOR_WEIGHT = 10.0f
@@ -412,6 +434,7 @@ class TypeaheadSearchEngine<T, K>(
         const val DEFAULT_SKIP_WEIGHT = 4.0f
         const val DEFAULT_FLOATING_WEIGHT = 2.5f
         const val DEFAULT_MAX_RESULTS = 5
+        const val FIND_BATCH_SIZE = 512
 
         /**
          * Creates a [TypeaheadSearchEngine] providing full control over the element type,
@@ -443,6 +466,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
             skipWeight: Float = DEFAULT_SKIP_WEIGHT,
             floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+            maxResults: Int = DEFAULT_MAX_RESULTS,
             textSelector: (T) -> String,
             uniqueKeySelector: (T) -> K
         ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
@@ -456,6 +480,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight = fuzzyWeight,
             skipWeight = skipWeight,
             floatingWeight = floatingWeight,
+            maxResults = maxResults,
             uniqueKeySelector = uniqueKeySelector,
             textSelector = textSelector
         ).apply { addAll(items) }
@@ -478,6 +503,7 @@ class TypeaheadSearchEngine<T, K>(
             prefixWeight: Float = DEFAULT_PREFIX_WEIGHT,
             fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
             skipWeight: Float = DEFAULT_SKIP_WEIGHT,
+            maxResults: Int = DEFAULT_MAX_RESULTS,
             floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
             textSelector: (T) -> String = { it.toString() }
         ): TypeaheadSearchEngine<T, T> = invoke(
@@ -492,6 +518,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight = fuzzyWeight,
             skipWeight = skipWeight,
             floatingWeight = floatingWeight,
+            maxResults = maxResults,
             textSelector = textSelector,
             uniqueKeySelector = { it }
         )
@@ -526,6 +553,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
             skipWeight: Float = DEFAULT_SKIP_WEIGHT,
             floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+            maxResults: Int = DEFAULT_MAX_RESULTS,
             textSelector: (T) -> String,
             uniqueKeySelector: (T) -> K
         ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
@@ -539,9 +567,10 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight = fuzzyWeight,
             skipWeight = skipWeight,
             floatingWeight = floatingWeight,
+            maxResults = maxResults,
             uniqueKeySelector = uniqueKeySelector,
             textSelector = textSelector,
-        ).apply { addAll(items) }
+        ).apply { addAll(items) { it } }
 
         /**
          * Creates a [TypeaheadSearchEngine] where the elements themselves act as their own unique identity keys,
@@ -572,6 +601,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight: Float = DEFAULT_FUZZY_WEIGHT,
             skipWeight: Float = DEFAULT_SKIP_WEIGHT,
             floatingWeight: Float = DEFAULT_FLOATING_WEIGHT,
+            maxResults: Int = DEFAULT_MAX_RESULTS,
             textSelector: (T) -> String = { it.toString() }
         ): TypeaheadSearchEngine<T, T> = invoke(
             items = items,
@@ -585,6 +615,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyWeight = fuzzyWeight,
             skipWeight = skipWeight,
             floatingWeight = floatingWeight,
+            maxResults = maxResults,
             textSelector = textSelector,
             uniqueKeySelector = { it }
         )
@@ -599,10 +630,12 @@ class TypeaheadSearchEngine<T, K>(
          */
         suspend operator fun <T, K> invoke(
             items: Iterable<T>,
+            maxResults: Int = DEFAULT_MAX_RESULTS,
             textSelector: (T) -> String = { it.toString() },
             uniqueKeySelector: (T) -> K,
         ): TypeaheadSearchEngine<T, K> = invoke(
             items = items,
+            maxResults = maxResults,
             textSelector = textSelector,
             uniqueKeySelector = uniqueKeySelector,
             defaultDispatcher = Dispatchers.Default

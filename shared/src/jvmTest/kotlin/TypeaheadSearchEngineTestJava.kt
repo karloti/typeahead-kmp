@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
@@ -21,6 +22,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.minutes
 
 @Serializable
 data class Product(
@@ -43,8 +45,11 @@ class TypeaheadSearchEngineTestJava {
      * - Data integrity through comparison of search results before and after serialization
      */
     @Test
-    fun `test import and export with json file serialization`() = runTest {
-        val targetSize = 10_000
+    fun `test import and export with json file serialization`() = runTest(timeout = 1.minutes) {
+        val targetSize = if (LOCAL) 10_000 else 1_000
+        val maxResults = if (LOCAL) 50 else 5
+
+        val query = "PQ82"
 
         // Generate a large synthetic dataset of products
         val productCategories = listOf("Electronics", "Clothing", "Food", "Books", "Toys", "Sports", "Home", "Beauty")
@@ -64,8 +69,8 @@ class TypeaheadSearchEngineTestJava {
             }
         }
 
-        val searchEngine = TypeaheadSearchEngine<Product> { product ->
-            product.name + " " + product.category + " " + product.brand
+        val searchEngine = TypeaheadSearchEngine<Product>(maxResults = maxResults) { product ->
+            product.name
         }
 
         println("⏳ Starting insertion of $targetSize products...")
@@ -94,7 +99,7 @@ class TypeaheadSearchEngineTestJava {
         )
 
         // Capture search results before export for comparison
-        val resultsBeforeExport = searchEngine.find("Product", maxResults = 100)
+        val resultsBeforeExport = searchEngine.find(query)
 
         // Export the search engine
         println("⏳ Starting export of search engine state...")
@@ -151,8 +156,7 @@ class TypeaheadSearchEngineTestJava {
         val readEndTime = System.currentTimeMillis()
 
         val deserializationStartTime = System.currentTimeMillis()
-        val deserializedRecords =
-            json.decodeFromString<List<io.github.karloti.typeahead.TypeaheadRecord<Product>>>(jsonFromFile)
+        val deserializedRecords: List<TypeaheadRecord<Product>> = json.decodeFromString(jsonFromFile)
         val deserializationEndTime = System.currentTimeMillis()
 
         val memoryAfterRead = runtime.totalMemory() - runtime.freeMemory()
@@ -169,8 +173,8 @@ class TypeaheadSearchEngineTestJava {
         tempFile.delete()
 
         // Import into a new search engine
-        val newSearchEngine = TypeaheadSearchEngine<Product> { product ->
-            product.name + " " + product.category + " " + product.brand
+        val newSearchEngine = TypeaheadSearchEngine<Product>(maxResults = maxResults) { product ->
+            product.name
         }
 
         println("⏳ Starting import of $targetSize records into new search engine...")
@@ -194,7 +198,7 @@ class TypeaheadSearchEngineTestJava {
         assertEquals(targetSize, newSearchEngine.size, "Imported engine should contain exactly $targetSize products.")
 
         // Verify the imported engine produces identical results
-        val resultsAfterImport = newSearchEngine.find("Product", maxResults = 100)
+        val resultsAfterImport = newSearchEngine.find(query)
 
         assertEquals(
             resultsBeforeExport.size,
@@ -204,14 +208,18 @@ class TypeaheadSearchEngineTestJava {
 
         resultsBeforeExport.zip(resultsAfterImport).forEachIndexed { index, (before, after) ->
             assertEquals(
-                before.first.id,
-                after.first.id,
-                "Product ID at index $index should match before and after import."
-            )
-            assertEquals(
                 before.second,
                 after.second,
-                "Score at index $index should match before and after import."
+                "Score at index $index should match before and after import.\n before: ${before.second}\n  after: ${after.second}"
+            )
+            assertEquals(
+                expected = before.first.id,
+                actual = after.first.id,
+                message = """
+                    Product ID at index $index should match before and after import.
+                    before: ${before.first} score: ${before.second}
+                     after: ${after.first} score: ${after.second}
+                     """.trimIndent()
             )
         }
 

@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.time.Duration.Companion.minutes
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -68,14 +69,17 @@ val countries = listOf(
     "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 )
 
-const val isJsOrWasm = true
+/**
+ * Set to `true` for intensive local runs, `false` for lightweight CI (GitHub Actions).
+ */
+const val LOCAL = false
 
 class TypeaheadSearchEngineTest {
 
     @Test
     fun testTypingSimulationWithScoreProgression() = runTest(timeout = 1.minutes) {
         launch {
-            val searchEngine = TypeaheadSearchEngine(countries)
+            val searchEngine = TypeaheadSearchEngine(items = countries, maxResults = 5)
 
             val queryToType = "Cnada"
 
@@ -83,7 +87,8 @@ class TypeaheadSearchEngineTest {
                 val partialQuery = queryToType.substring(0, i)
                 println("\n=== Typing: '$partialQuery' with typing error of '$queryToType' ===")
 
-                val results = searchEngine.find(partialQuery, maxResults = 5)
+                searchEngine.find(partialQuery)
+                val results = searchEngine.results.value
 
                 if (results.isEmpty()) {
                     println("No results found")
@@ -99,7 +104,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testUltimateThreadSafetyAndFuzzySearch() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>()
+        val searchEngine = TypeaheadSearchEngine<String>(maxResults = 10)
 
         val baselineItems = (1..50).map { "item-baseline-$it" }
         val itemsToRemove = (1..500).map { "item-to-remove-$it" }
@@ -109,8 +114,8 @@ class TypeaheadSearchEngineTest {
         // For platforms with true multi-threading (JVM, Native), we use more writers.
         // For JS/WASM, we reduce the count to avoid heavy overhead while still testing the logic.
 
-        val writersCount = if (isJsOrWasm) 5 else 100
-        val itemsPerWriter = if (isJsOrWasm) 10 else 300
+        val writersCount = if (LOCAL) 100 else 5
+        val itemsPerWriter = if (LOCAL) 300 else 10
 
         println("Starting aggressive multi-threading test with $writersCount writers...")
 
@@ -132,9 +137,9 @@ class TypeaheadSearchEngineTest {
             }
         }
 
-        repeat(if (isJsOrWasm) 5 else 20) {
+        repeat(if (LOCAL) 20 else 5) {
             allJobs += launch(Dispatchers.Default) {
-                searchEngine.find("item", maxResults = 10)
+                searchEngine.find("item")
             }
         }
 
@@ -171,7 +176,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testExportAndImportSequence() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it })
+        val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it }, maxResults = 5)
 
         launch {
             // 1. Load initial data and compute embeddings
@@ -182,7 +187,7 @@ class TypeaheadSearchEngineTest {
             // 2. Perform a baseline search to record expected scores
             val query = "can"
             val expectResults = listOf("Canada", "Cambodia", "Cameroon", "Cabo Verde", "Chad")
-            val actualResults = searchEngine.find(query, maxResults = 5)
+            val actualResults = searchEngine.find(query)
             assertEquals(expectResults, actualResults.map { it.first }, "Baseline search results must match.")
 
             // 3. Export the state
@@ -201,7 +206,7 @@ class TypeaheadSearchEngineTest {
             assertEquals(originalSize, searchEngine.size, "Engine size must be fully restored after import.")
 
             // 6. Perform the exact same search and verify mathematical integrity
-            val restoredResults = searchEngine.find(query, maxResults = 5)
+            val restoredResults = searchEngine.find(query)
             assertEquals(actualResults, restoredResults, "Restored results must match.")
 
             // Verify that not only the items match, but their floating-point scores match perfectly
@@ -234,10 +239,10 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun `test highlight heatmap for floating n-grams`() = runTest {
-        val searchEngine = TypeaheadSearchEngine<String>()
+        val searchEngine = TypeaheadSearchEngine<String>(maxResults = 1)
         searchEngine.add("Bulgaria")
 
-        searchEngine.find("blugaria", maxResults = 1)
+        searchEngine.find("blugaria")
             searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
             println("Top match heatmap: ${topMatch.contentToString()}")
             val expectedHeatmap = intArrayOf(0, 2, 2, 0, 0, 0, 0, 0)
@@ -246,7 +251,7 @@ class TypeaheadSearchEngineTest {
                 message = "Floating N-gram heatmap must match expected secondary tiers."
             )
         }
-        searchEngine.find("bulgira ", maxResults = 1)
+        searchEngine.find("bulgira ")
         searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
             println("Top match heatmap: ${topMatch.contentToString()}")
             val expectedHeatmap = intArrayOf(0, 0, 0, 0, 2, 0, 2, -1)
@@ -259,7 +264,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun `test typing simulation with score progression and visual console highlighting`() = runTest {
-        val searchEngine = TypeaheadSearchEngine<String>()
+        val searchEngine = TypeaheadSearchEngine<String>(maxResults = 1)
 
         // Add a primary target to observe
         searchEngine.add("Bulgaria")
@@ -302,7 +307,7 @@ class TypeaheadSearchEngineTest {
         println("-------------------------------------------------------")
 
         for (query in typingSimulation) {
-            searchEngine.find(query, maxResults = 1)
+            searchEngine.find(query)
             val topMatch = searchEngine.highlightedResults.value.firstOrNull()
 
             if (topMatch != null) {
@@ -387,7 +392,7 @@ class TypeaheadSearchEngineTest {
     @Test
     fun `Verify single add under high concurrency works correctly and measure performance`() = runTest {
         val engine = TypeaheadSearchEngine<String>()
-        val totalItems = if (isJsOrWasm) 1000 else 100_000
+        val totalItems = if (LOCAL) 100_000 else 1_000
         val items = (1..totalItems).map { "Product $it" }
 
         val time = measureTime {
@@ -410,7 +415,7 @@ class TypeaheadSearchEngineTest {
     @Test
     fun `Verify addAll processes items correctly and measure performance`() = runTest {
         val engine = TypeaheadSearchEngine<String>()
-        val totalItems = if (isJsOrWasm) 1000 else 50_000
+        val totalItems = if (LOCAL) 50_000 else 1_000
         val items = (1..totalItems).map { "Product $it" }
 
         val time = measureTime {
@@ -482,13 +487,34 @@ class TypeaheadSearchEngineTest {
                 "Apricot"
             )
         )
-
         val results = engine.find("Ap")
 
-        assertEquals(2, results.size)
+        assertEquals(3, engine.size)
+        assertContentEquals(listOf("Apple", "Apricot","Banana"), results.map { it.first })
+    }
 
-        val resultStrings = results.map { it.first }
-        assertTrue(resultStrings.contains("Apple"))
-        assertTrue(resultStrings.contains("Apricot"))
+    @Test
+    fun `Verify State`() = runTest {
+        val searchEngine = TypeaheadSearchEngine<String>()
+        searchEngine.add("Bulgaria")
+
+        searchEngine.find("blugaria")
+        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
+            println("Top match heatmap: ${topMatch.contentToString()}")
+            val expectedHeatmap = intArrayOf(0, 2, 2, 0, 0, 0, 0, 0)
+            assertTrue(
+                actual = expectedHeatmap.contentEquals(topMatch),
+                message = "Floating N-gram heatmap must match expected secondary tiers."
+            )
+        }
+        searchEngine.find("bulgira ")
+        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
+            println("Top match heatmap: ${topMatch.contentToString()}")
+            val expectedHeatmap = intArrayOf(0, 0, 0, 0, 2, 0, 2, -1)
+            assertTrue(
+                actual = expectedHeatmap.contentEquals(topMatch),
+                message = "Floating N-gram heatmap must match expected secondary tiers."
+            )
+        }
     }
 }

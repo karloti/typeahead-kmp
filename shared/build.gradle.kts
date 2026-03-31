@@ -199,6 +199,13 @@ extensions.configure<SigningExtension> {
     sign(publishing.publications)
 }*/
 
+tasks.withType<Test> {
+    maxHeapSize = "4g"
+    testLogging {
+        showStandardStreams = true
+    }
+}
+
 /*
 tasks.register("createMissingSourceDirs") {
     group = "setup"
