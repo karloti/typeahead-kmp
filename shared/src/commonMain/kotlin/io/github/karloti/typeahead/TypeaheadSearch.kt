@@ -18,11 +18,6 @@ package io.github.karloti.typeahead
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.io.Sink
-import kotlinx.io.Source
-import kotlinx.serialization.KSerializer
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.serializer
 
 /**
  * Contract for a high-performance, in-memory fuzzy search engine with typeahead capabilities.
