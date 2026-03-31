@@ -37,7 +37,7 @@ Add the dependency to your `build.gradle.kts` in the `commonMain` source set:
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.karloti:typeahead-kmp:1.7.0")  // Replace it with the latest version
+            implementation("io.github.karloti:typeahead-kmp:1.7.1")  // Replace it with the latest version
         }
     }
 }
