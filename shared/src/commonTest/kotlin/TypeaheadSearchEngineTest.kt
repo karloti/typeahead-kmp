@@ -74,7 +74,10 @@ class TypeaheadSearchEngineTest {
     @Test
     fun testTypingSimulationWithScoreProgression() = runTest(timeout = 1.minutes) {
         launch {
-            val searchEngine = TypeaheadSearchEngine(items = countries, metadata = TypeaheadMetadata(maxResults = 5))
+            val searchEngine = TypeaheadSearchEngine.invoke(
+                items = countries,
+                metadata = TypeaheadMetadata(maxResults = 5),
+            )
 
             val queryToType = "Cnada"
 
@@ -168,71 +171,6 @@ class TypeaheadSearchEngineTest {
 
         println("✅ Ultimate Thread-safety and Accuracy test passed perfectly! Expected items: $expectedSize")
     }
-
-    /*
-        @Test
-        fun testExportAndImportSequence() = runTest(timeout = 1.minutes) {
-            val searchEngine = TypeaheadSearchEngine<String>(textSelector = { it }, maxResults = 5)
-
-            launch {
-                // 1. Load initial data and compute embeddings
-                searchEngine.addAll(countries)
-                val originalSize = searchEngine.size
-                assertEquals(countries.size, originalSize, "Engine size should match the number of countries.")
-
-                // 2. Perform a baseline search to record expected scores
-                val query = "can"
-                val expectResults = listOf("Canada", "Cambodia", "Cameroon", "Cabo Verde", "Chad")
-                val actualResults = searchEngine.find(query)
-                assertEquals(expectResults, actualResults.map { it.first }, "Baseline search results must match.")
-
-                // 3. Export the state
-                // We use .toList() to materialize the sequence into memory for testing purposes,
-                // so we don't lose the data when we clear the engine.
-                val exportedRecords = searchEngine.exportAsSequence().toList()
-                assertEquals(originalSize, exportedRecords.size, "Exported sequence size must match engine size.")
-
-                // 4. Clear the engine
-                searchEngine.clear()
-                assertEquals(0, searchEngine.size, "Engine should be empty after clear().")
-                assertTrue(searchEngine.find(query).isEmpty(), "Search should return nothing after clearing.")
-
-                // 5. Import the state back from the materialized sequence
-                searchEngine.importFromSequence(exportedRecords.asSequence())
-                assertEquals(originalSize, searchEngine.size, "Engine size must be fully restored after import.")
-
-                // 6. Perform the exact same search and verify mathematical integrity
-                val restoredResults = searchEngine.find(query)
-                assertEquals(actualResults, restoredResults, "Restored results must match.")
-
-                // Verify that not only the items match, but their floating-point scores match perfectly
-                actualResults.forEachIndexed { index, expectedPair ->
-                    val actualPair = restoredResults[index]
-                    assertEquals(expectedPair.first, actualPair.first, "Item at index $index must match.")
-                    assertEquals(
-                        expectedPair.second,
-                        actualPair.second,
-                        "Mathematical score at index $index must be identical."
-                    )
-                }
-
-                // 7. Test merging functionality (clearExisting = false)
-                val extraCountryRecord = TypeaheadPayload(
-                    item = "Atlantis",
-                    vector = SparseVector(
-                        features = arrayOf("P_a", "L_8"),
-                        weights = floatArrayOf(10.0f, 8.0f)
-                    )
-                )
-                searchEngine.importFromSequence(sequenceOf(extraCountryRecord), clearExisting = false)
-
-                assertEquals(originalSize + 1, searchEngine.size, "Engine size should increase by 1 after merging.")
-                assertTrue("Atlantis" in searchEngine, "The merged item 'Atlantis' should be present in the engine.")
-
-                println("✅ Export/Import sequence and vector integrity test passed perfectly!")
-            }
-        }
-    */
 
     @Test
     fun `test highlight heatmap for floating n-grams`() = runTest {
@@ -442,7 +380,7 @@ class TypeaheadSearchEngineTest {
     fun `Verify engine deduplicates search results using custom unique key selector`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            uniqueKeySelector = { it.docId }
+            keySelector = { it.docId }
         )
 
         engine.addAll(

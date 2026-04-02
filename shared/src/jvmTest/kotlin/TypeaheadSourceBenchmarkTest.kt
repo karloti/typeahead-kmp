@@ -111,7 +111,7 @@ class TypeaheadSourceBenchmarkTest {
                     TypeaheadSearchEngine(
                         source = src,
                         textSelector = { it.name },
-                        uniqueKeySelector = { it.id },
+                        keySelector = { it.id },
                     )
                 }
 
@@ -304,7 +304,7 @@ class TypeaheadSourceBenchmarkTest {
                     TypeaheadSearchEngine(
                         source = src,
                         textSelector = { it.name },
-                        uniqueKeySelector = { it.id },
+                        keySelector = { it.id },
                     )
                 }
             val factoryMs = System.currentTimeMillis() - factoryStartMs

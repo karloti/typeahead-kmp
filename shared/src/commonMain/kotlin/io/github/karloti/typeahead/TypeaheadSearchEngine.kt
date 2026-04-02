@@ -54,11 +54,11 @@ import kotlin.math.sqrt
  * @param K The type of unique key used to identify each element.
  * @param defaultDispatcher The coroutine dispatcher used for heavy computational vectorization. Defaults to [Dispatchers.Default].
  * @param textSelector A lambda function that extracts the searchable textual representation from your object [T]. Defaults to `toString()`.
- * @param uniqueKeySelector A lambda function that extracts a unique key for each element [T]. Defaults to `it`.
+ * @param keySelector A lambda function that extracts a unique key for each element [T]. Defaults to `it`.
  */
 
 class TypeaheadSearchEngine<T, K>(
-    private val defaultDispatcher: CoroutineDispatcher,
+    private val textSelector: (T) -> String,
     /**
      * The active configuration of this engine.
      *
@@ -67,9 +67,9 @@ class TypeaheadSearchEngine<T, K>(
      * atomically replaced by the [TypeaheadMetadata] embedded in the import stream,
      * so the engine's configuration is always consistent with its indexed vectors.
      */
-    metadata: TypeaheadMetadata,
-    private val textSelector: (T) -> String,
-    private val uniqueKeySelector: (T) -> K,
+    metadata: TypeaheadMetadata = TypeaheadMetadata(),
+    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val keySelector: (T) -> K,
 ) : TypeaheadSearch<T, K> {
 
     @PublishedApi
@@ -117,7 +117,7 @@ class TypeaheadSearchEngine<T, K>(
             maxSize = typeaheadMetadata.maxResults,
             dispatcher = defaultDispatcher,
             comparator = compareByDescending { it.second },
-            keySelector = { it: Pair<T, Float> -> uniqueKeySelector(it.first) }
+            keySelector = { it: Pair<T, Float> -> keySelector(it.first) }
         )
 
         topResultsQueue.addAll(
@@ -500,6 +500,32 @@ class TypeaheadSearchEngine<T, K>(
         const val FIND_BATCH_SIZE = 512
 
         /**
+         * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.
+         *
+         * It utilizes L2-normalized sparse vector embeddings and Cosine Similarity to provide
+         * instant, typo-tolerant search results (handling transpositions, deletions, and insertions).
+         * It behaves like a mutable concurrent collection, allowing you to add, remove, and find elements.
+         *
+         * @param T The type of elements held in this engine.
+         * @param defaultDispatcher The coroutine dispatcher used for heavy computational vectorization. Defaults to [Dispatchers.Default].
+         * @param textSelector A lambda function that extracts the searchable textual representation from your object [T]. Defaults to `toString()`.
+         * @param keySelector A lambda function that extracts a unique key for each element [T]. Defaults to `it`.
+         */
+        operator fun <T> invoke(
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            keySelector: (T) -> T = { it },
+            textSelector: (T) -> String = { it.toString() },
+        ): TypeaheadSearchEngine<T, T> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = metadata,
+                defaultDispatcher = defaultDispatcher,
+                keySelector = keySelector
+            )
+        }
+
+        /**
          * Creates a [TypeaheadSearchEngine] with explicit text and key selectors, populated from an [Iterable].
          *
          * ```kotlin
@@ -515,20 +541,22 @@ class TypeaheadSearchEngine<T, K>(
          * @param defaultDispatcher The coroutine dispatcher used for background processing.
          * @param metadata Configuration for weights, N-gram size, and result limits.
          * @param textSelector Extracts the searchable text representation from each element [T].
-         * @param uniqueKeySelector Extracts a unique identity key from each element [T].
+         * @param keySelector Extracts a unique identity key from each element [T].
          */
-        suspend inline operator fun <reified T, reified K> invoke(
-            items: Iterable<T> = emptyList(),
-            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+        suspend operator fun <T, K> invoke(
+            items: Iterable<T>,
+            textSelector: (T) -> String = { it.toString() },
             metadata: TypeaheadMetadata = TypeaheadMetadata(),
-            noinline textSelector: (T) -> String,
-            noinline uniqueKeySelector: (T) -> K
-        ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
-            defaultDispatcher = defaultDispatcher,
-            metadata = metadata,
-            textSelector = textSelector,
-            uniqueKeySelector = uniqueKeySelector
-        ).apply { addAll(items) }
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            keySelector: (T) -> K
+        ): TypeaheadSearchEngine<T, K> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = metadata,
+                defaultDispatcher = defaultDispatcher,
+                keySelector = keySelector
+            ).apply { addAll(items) }
+        }
 
         /**
          * Creates a [TypeaheadSearchEngine] where each element serves as its own unique key,
@@ -542,18 +570,19 @@ class TypeaheadSearchEngine<T, K>(
          * @param items Initial elements to populate the engine. Defaults to an empty list.
          * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
          */
-        suspend inline operator fun <reified T> invoke(
-            items: Iterable<T> = emptyList(),
-            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+        suspend operator fun <T> invoke(
+            items: Iterable<T>,
             metadata: TypeaheadMetadata = TypeaheadMetadata(),
-            noinline textSelector: (T) -> String = { it.toString() }
-        ): TypeaheadSearchEngine<T, T> = invoke(
-            items = items,
-            defaultDispatcher = defaultDispatcher,
-            metadata = metadata,
-            textSelector = textSelector,
-            uniqueKeySelector = { it }
-        )
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            textSelector: (T) -> String = { it.toString() }
+        ): TypeaheadSearchEngine<T, T> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = metadata,
+                defaultDispatcher = defaultDispatcher,
+                keySelector = { it }
+            ).apply { addAll(items) }
+        }
 
         /**
          * Creates a [TypeaheadSearchEngine] with explicit selectors, asynchronously populated from a [Flow].
@@ -572,18 +601,20 @@ class TypeaheadSearchEngine<T, K>(
          * @param textSelector Extracts searchable text from each element [T].
          * @param uniqueKeySelector Extracts a unique identity key from each element [T].
          */
-        suspend inline operator fun <reified T, reified K> invoke(
+        suspend operator fun <T, K> invoke(
             items: Flow<T>,
-            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            textSelector: (T) -> String,
             metadata: TypeaheadMetadata = TypeaheadMetadata(),
-            noinline textSelector: (T) -> String,
-            noinline uniqueKeySelector: (T) -> K
-        ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
-            defaultDispatcher = defaultDispatcher,
-            metadata = metadata,
-            textSelector = textSelector,
-            uniqueKeySelector = uniqueKeySelector
-        ).apply { addAll(items) { it } }
+            defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+            uniqueKeySelector: (T) -> K
+        ): TypeaheadSearchEngine<T, K> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = metadata,
+                defaultDispatcher = defaultDispatcher,
+                keySelector = uniqueKeySelector
+            ).apply { addAll(items) { it } }
+        }
 
         /**
          * Creates a [TypeaheadSearchEngine] where each element serves as its own unique key,
@@ -598,51 +629,19 @@ class TypeaheadSearchEngine<T, K>(
          * @param metadata Configuration for weights, N-gram size, and result limits.
          * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
          */
-        suspend inline operator fun <reified T> invoke(
+        suspend operator fun <T> invoke(
             items: Flow<T>,
+            metadata: TypeaheadMetadata = TypeaheadMetadata(),
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-            metadata: TypeaheadMetadata = TypeaheadMetadata(),
-            noinline textSelector: (T) -> String = { it.toString() }
-        ): TypeaheadSearchEngine<T, T> = invoke(
-            items = items,
-            defaultDispatcher = defaultDispatcher,
-            metadata = metadata,
-            textSelector = textSelector,
-            uniqueKeySelector = { it }
-        )
-
-        /**
-         * Creates a [TypeaheadSearchEngine] with explicit selectors using the default dispatcher.
-         *
-         * Convenience overload that omits the [defaultDispatcher] parameter, defaulting
-         * to [Dispatchers.Default].
-         *
-         * ```kotlin
-         * data class City(val id: Int, val name: String)
-         * val engine = TypeaheadSearchEngine(
-         *     items = listOf(City(1, "Sofia"), City(2, "Plovdiv")),
-         *     textSelector = { it.name },
-         *     uniqueKeySelector = { it.id }
-         * )
-         * ```
-         *
-         * @param items The initial dataset to index.
-         * @param metadata Configuration for weights, N-gram size, and result limits.
-         * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
-         * @param uniqueKeySelector Extracts a unique identity key from each element [T].
-         */
-        suspend inline operator fun <reified T, reified K> invoke(
-            items: Iterable<T>,
-            metadata: TypeaheadMetadata = TypeaheadMetadata(),
-            noinline textSelector: (T) -> String = { it.toString() },
-            noinline uniqueKeySelector: (T) -> K,
-        ): TypeaheadSearchEngine<T, K> = invoke(
-            items = items,
-            metadata = metadata,
-            textSelector = textSelector,
-            uniqueKeySelector = uniqueKeySelector,
-            defaultDispatcher = Dispatchers.Default
-        )
+            textSelector: (T) -> String = { it.toString() }
+        ): TypeaheadSearchEngine<T, T> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = metadata,
+                defaultDispatcher = defaultDispatcher,
+                keySelector = { it }
+            ).apply { addAll(items) { it } }
+        }
 
         /**
          * Creates a [TypeaheadSearchEngine] by restoring its complete state — configuration
@@ -671,24 +670,33 @@ class TypeaheadSearchEngine<T, K>(
          * @param source The [Source] to restore from, as produced by [exportToSink].
          * @param itemSerializer The [KSerializer] for deserializing items of type [T].
          * @param textSelector Extracts searchable text from each element [T].
-         * @param uniqueKeySelector Extracts a unique identity key from each element [T].
+         * @param keySelector Extracts a unique identity key from each element [T].
          * @param defaultDispatcher The coroutine dispatcher used for search computations.
          * @param json The [Json] instance used for deserialization.
          * @return A fully restored [TypeaheadSearchEngine] with [typeaheadMetadata] set from the stream.
          */
         inline operator fun <reified T, reified K> invoke(
             source: Source,
-            itemSerializer: KSerializer<T> = serializer<T>(),
             noinline textSelector: (T) -> String,
-            noinline uniqueKeySelector: (T) -> K,
+            itemSerializer: KSerializer<T> = serializer<T>(),
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
             json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true },
-        ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
-            defaultDispatcher = defaultDispatcher,
-            metadata = TypeaheadMetadata(),
-            textSelector = textSelector,
-            uniqueKeySelector = uniqueKeySelector
-        ).apply { importFromSource(source, itemSerializer, clearExisting = true, json = json) }
+            noinline keySelector: (T) -> K,
+        ): TypeaheadSearchEngine<T, K> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = TypeaheadMetadata(),
+                defaultDispatcher = defaultDispatcher,
+                keySelector = keySelector,
+            ).apply {
+                importFromSource(
+                    source = source,
+                    itemSerializer = itemSerializer,
+                    clearExisting = true,
+                    json = json
+                )
+            }
+        }
 
         /**
          * Creates a [TypeaheadSearchEngine] where each element serves as its own unique key,
@@ -714,17 +722,24 @@ class TypeaheadSearchEngine<T, K>(
         inline operator fun <reified T> invoke(
             source: Source,
             itemSerializer: KSerializer<T> = serializer<T>(),
-            noinline textSelector: (T) -> String = { it.toString() },
             defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
             json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true },
-        ): TypeaheadSearchEngine<T, T> = invoke(
-            source = source,
-            itemSerializer = itemSerializer,
-            textSelector = textSelector,
-            uniqueKeySelector = { it },
-            defaultDispatcher = defaultDispatcher,
-            json = json,
-        )
+            noinline textSelector: (T) -> String = { it.toString() },
+        ): TypeaheadSearchEngine<T, T> {
+            return TypeaheadSearchEngine(
+                textSelector = textSelector,
+                metadata = TypeaheadMetadata(),
+                defaultDispatcher = defaultDispatcher,
+                keySelector = { it }
+            ).apply {
+                importFromSource(
+                    source = source,
+                    itemSerializer = itemSerializer,
+                    clearExisting = true,
+                    json = json
+                )
+            }
+        }
     }
 }
 
