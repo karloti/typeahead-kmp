@@ -42,8 +42,6 @@ import kotlinx.serialization.serializer
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
-import kotlin.sequences.flatMap
-import kotlin.sequences.forEach
 
 /**
  * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.
@@ -59,7 +57,7 @@ import kotlin.sequences.forEach
  * @param uniqueKeySelector A lambda function that extracts a unique key for each element [T]. Defaults to `it`.
  */
 
-class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
+class TypeaheadSearchEngine<T, K>(
     private val defaultDispatcher: CoroutineDispatcher,
     /**
      * The active configuration of this engine.
@@ -69,10 +67,15 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
      * atomically replaced by the [TypeaheadMetadata] embedded in the import stream,
      * so the engine's configuration is always consistent with its indexed vectors.
      */
-    @PublishedApi internal var metadata: TypeaheadMetadata,
-    @PublishedApi internal val textSelector: (T) -> String,
+    metadata: TypeaheadMetadata,
+    private val textSelector: (T) -> String,
     private val uniqueKeySelector: (T) -> K,
 ) : TypeaheadSearch<T, K> {
+
+    @PublishedApi
+    internal var typeaheadMetadata: TypeaheadMetadata = metadata
+    val metadata: TypeaheadMetadata
+        get() = typeaheadMetadata
 
     // Holds the dataset mapped to their pre-computed, normalized spatial vectors
     @PublishedApi
@@ -110,10 +113,11 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
 
         val queryVector = query.toPositionalEmbedding()
 
-        val topResultsQueue = ConcurrentPriorityQueue<Pair<T, Float>, K>(
-            maxSize = metadata.maxResults,
+        val topResultsQueue = ConcurrentPriorityQueue(
+            maxSize = typeaheadMetadata.maxResults,
+            dispatcher = defaultDispatcher,
             comparator = compareByDescending { it.second },
-            uniqueKeySelector = { uniqueKeySelector(it.first) }
+            keySelector = { it: Pair<T, Float> -> uniqueKeySelector(it.first) }
         )
 
         topResultsQueue.addAll(
@@ -132,7 +136,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
             val targetText = textSelector(match.first)
             val heatmap = query.computeHeatmap(
                 targetStr = targetText,
-                ignoreCase = metadata.ignoreCase,
+                ignoreCase = typeaheadMetadata.ignoreCase,
             )
             HighlightedMatch(
                 item = match.first,
@@ -264,7 +268,6 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
             }
         }
     }
-
 
     /**
      * Removes a specific element and its vector embedding from the search engine.
@@ -402,16 +405,16 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
 
         // 1. P0 Anchor (Absolute foundation)
         // The first letter is highly reliable in typeahead scenarios.
-        vector["A_${word[0]}"] = metadata.anchorWeight
+        vector["A_${word[0]}"] = typeaheadMetadata.anchorWeight
 
         // 2. Length Bucket (Length synchronizer)
         // Elevates words with the exact same length during typographical errors.
-        vector["L_$length"] = metadata.lengthWeight
+        vector["L_$length"] = typeaheadMetadata.lengthWeight
 
         // 3. Typoglycemia Gestalt Anchor
         // Captures perfectly 1-character typos where the length, first, and last characters match.
         if (length > 1) {
-            vector["G_${word[0]}_${length}_${word.last()}"] = metadata.gestaltWeight
+            vector["G_${word[0]}_${length}_${word.last()}"] = typeaheadMetadata.gestaltWeight
         }
 
         // 4. Strict & Fuzzy Prefixes (The core of Typeahead)
@@ -419,13 +422,13 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
             val prefix = word.substring(0, i)
 
             // Strict Prefix: Rewards perfect typing sequence.
-            vector["P_$prefix"] = i * metadata.prefixWeight
+            vector["P_$prefix"] = i * typeaheadMetadata.prefixWeight
 
             if (i >= 2) {
                 // Fuzzy Prefix: Mitigates transpositions (e.g., "Cna" vs "Canada").
                 // Anchors the first character and sorts the remainder of the prefix.
                 val sortedRest = prefix.substring(1).toCharArray().apply { sort() }.joinToString("")
-                vector["F_${word[0]}_$sortedRest"] = i * metadata.fuzzyWeight
+                vector["F_${word[0]}_$sortedRest"] = i * typeaheadMetadata.fuzzyWeight
             }
             yield()
         }
@@ -433,16 +436,16 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
         // 5. Skip-Grams (Bridge for deletions and insertions)
         for (i in 0 until length - 2) {
             val skipKey = "${word[i]}${word[i + 2]}"
-            vector[skipKey] = (vector[skipKey] ?: 0.0f) + metadata.skipWeight
+            vector[skipKey] = (vector[skipKey] ?: 0.0f) + typeaheadMetadata.skipWeight
         }
 
         // 6. Floating N-Grams (The structural skeleton)
         for (i in 0 until length) {
-            for (n in 2..metadata.maxNgramSize) {
+            for (n in 2..typeaheadMetadata.maxNgramSize) {
                 if (i + n <= length) {
                     val ngram = word.substring(i, i + n)
                     // Linear progression for weights avoids complex branching operations.
-                    val weight = n * metadata.floatingWeight
+                    val weight = n * typeaheadMetadata.floatingWeight
                     vector[ngram] = (vector[ngram] ?: 0.0f) + weight
                 }
             }
@@ -523,8 +526,8 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
         ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
             defaultDispatcher = defaultDispatcher,
             metadata = metadata,
-            uniqueKeySelector = uniqueKeySelector,
-            textSelector = textSelector
+            textSelector = textSelector,
+            uniqueKeySelector = uniqueKeySelector
         ).apply { addAll(items) }
 
         /**
@@ -578,8 +581,8 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
         ): TypeaheadSearchEngine<T, K> = TypeaheadSearchEngine(
             defaultDispatcher = defaultDispatcher,
             metadata = metadata,
-            uniqueKeySelector = uniqueKeySelector,
             textSelector = textSelector,
+            uniqueKeySelector = uniqueKeySelector
         ).apply { addAll(items) { it } }
 
         /**
@@ -671,9 +674,9 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
          * @param uniqueKeySelector Extracts a unique identity key from each element [T].
          * @param defaultDispatcher The coroutine dispatcher used for search computations.
          * @param json The [Json] instance used for deserialization.
-         * @return A fully restored [TypeaheadSearchEngine] with [metadata] set from the stream.
+         * @return A fully restored [TypeaheadSearchEngine] with [typeaheadMetadata] set from the stream.
          */
-        inline operator fun <reified T, K> invoke(
+        inline operator fun <reified T, reified K> invoke(
             source: Source,
             itemSerializer: KSerializer<T> = serializer<T>(),
             noinline textSelector: (T) -> String,
@@ -684,7 +687,7 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
             defaultDispatcher = defaultDispatcher,
             metadata = TypeaheadMetadata(),
             textSelector = textSelector,
-            uniqueKeySelector = uniqueKeySelector,
+            uniqueKeySelector = uniqueKeySelector
         ).apply { importFromSource(source, itemSerializer, clearExisting = true, json = json) }
 
         /**
@@ -705,8 +708,8 @@ class TypeaheadSearchEngine<T, K> @PublishedApi internal constructor(
          * @param itemSerializer The [KSerializer] for deserializing items of type [T].
          * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
          * @param defaultDispatcher The coroutine dispatcher used for search computations.
-         * @param json The [Json] instance used for deserialization.
-         * @return A fully restored [TypeaheadSearchEngine] with [metadata] set from the stream.
+         * @param json Holen The [Json] instance used for deserialization.
+         * @return A fully restored [TypeaheadSearchEngine] with [typeaheadMetadata] set from the stream.
          */
         inline operator fun <reified T> invoke(
             source: Source,
@@ -757,7 +760,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
         bufferedSink.writeString("[\n")
 
         // 1. Write metadata as the first element
-        val metaString = json.encodeToString(polymorphicSerializer, metadata)
+        val metaString = json.encodeToString(polymorphicSerializer, typeaheadMetadata)
         bufferedSink.writeString("  $metaString")
 
         // 2. Lazily iterate and write each payload record
@@ -785,7 +788,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
  * records whose pre-computed vectors are loaded directly into the index.
  *
  * **Metadata handling:**
- * - `clearExisting = true` (default): [metadata] is replaced by the value read from the
+ * - `clearExisting = true` (default): [typeaheadMetadata] is replaced by the value read from the
  *   stream, so the engine's configuration is always consistent with its indexed vectors.
  * - `clearExisting = false`: the imported [TypeaheadMetadata.maxNgramSize] must equal the
  *   engine's current value; merging vectors produced with a different N-gram size would
@@ -805,7 +808,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
  * @param T The type of the serialized items (must be assignment-compatible with [T] at runtime).
  * @param source The [Source] to read the JSON array from.
  * @param itemSerializer The [KSerializer] for item deserialization.
- * @param clearExisting If `true`, replaces the current index and [metadata]; if `false`, merges records.
+ * @param clearExisting If `true`, replaces the current index and [typeaheadMetadata]; if `false`, merges records.
  * @param json The [Json] instance used for deserialization.
  * @throws IllegalStateException if [clearExisting] is `false` and the imported
  *         [TypeaheadMetadata.maxNgramSize] differs from the engine's current value.
@@ -834,9 +837,9 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
             when (val firstItem = iterator.next()) {
                 is TypeaheadMetadata -> {
                     if (clearExisting) {
-                        metadata = firstItem
+                        typeaheadMetadata = firstItem
                     } else {
-                        check(firstItem == metadata) {
+                        check(firstItem == typeaheadMetadata) {
                             """Imported metadata does not match engine metadata. To merge records, both must have identical weights and N-gram sizes to ensure consistent scoring. Use clearExisting = true to overwrite the current engine state with the imported one."""
                         }
                     }
