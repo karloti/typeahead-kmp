@@ -37,7 +37,7 @@ Add the dependency to your `build.gradle.kts` in the `commonMain` source set:
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.karloti:typeahead-kmp:1.7.1")  // Replace it with the latest version
+            implementation("io.github.karloti:typeahead-kmp:1.8.1")  // Replace it with the latest version
         }
     }
 }
@@ -79,7 +79,7 @@ data class Country(val id: Int, val countryName: String)
 val searchEngineFromList = TypeaheadSearchEngine(
     items = listOf(Country(id = 1, countryName = "Canada"), Country(id = 2, countryName = "Bulgaria")),
     textSelector = Country::countryName,
-    uniqueKeySelector = Country::id // Optional, but recommended for unique identification
+    keySelector = Country::id // Optional, but recommended for unique identification
 )
 
 // Initialize with a Flow (for streaming data)
@@ -111,8 +111,9 @@ runBlocking {
 
     // Access the StateFlow for reactive updates
     val highlightedResults = searchEngineFromList.highlightedResults.first() // Get current value
-    highlightedResults.forEach { (country, score, heatmap) ->
-        val highlightedText = heatmap.renderHighlightedString(country.countryName)
+    highlightedResults.forEach { match ->
+        val highlightedText = match.heatmap.renderHighlightedString(match.item.countryName)
+        val score = match.score
         val formattedScore = score.toString().take(5)
         println(" Score: $formattedScore | Match: $highlightedText")
     }
@@ -167,7 +168,7 @@ import kotlinx.io.files.source
 val restoredEngineFromFactory = TypeaheadSearchEngine(
     source = SystemFileSystem.source(path).buffered(),
     textSelector = Country::countryName,
-    uniqueKeySelector = Country::id
+    keySelector = Country::id
 )
 println("Engine restored from factory. Size: ${restoredEngineFromFactory.size}")
 ```
@@ -184,9 +185,9 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.files.source
 
 // Create an empty engine or one with some initial data
-val existingEngine = TypeaheadSearchEngine(
+val existingEngine = TypeaheadSearchEngine<Country, Int>(
     textSelector = Country::countryName,
-    uniqueKeySelector = Country::id
+    keySelector = Country::id
 )
 
 // Import from the source, clearing any existing data
@@ -301,8 +302,8 @@ matches.
 2.  **Intelligent Fallback**: The CLI first checks for an exact match. If the user makes a typo (e.g., typing `Typeahed`
     instead of `Typeahead`), the exact search fails, and the engine immediately falls back to its vector space search to
     find the nearest neighbors.
-3.  **Visual Heatmap Highlighting**: This example showcases the true power of the engine's `findWithHighlights()` API.
-    Instead of just returning a score, the engine returns an `IntArray` spatial heatmap for each match. The CLI uses this
+3.  **Visual Heatmap Highlighting**: This example showcases the true power of the engine's `highlightedResults` API.
+    After calling `find()`, the engine exposes an `IntArray` spatial heatmap for each match via the `highlightedResults` StateFlow. The CLI uses this
     data to render color-coded terminal output:
 
 *   🟩 **Solid Prefix**: Exact starting matches.
@@ -379,7 +380,7 @@ Instead, it functions as a highly specialized, local vector database:
 2.  **`O(K)` Search Complexity**: Because vectors are pre-computed and alphabetically sorted, the core search reduces to
     an ultra-fast, two-pointer dot-product intersection.
 3.  **Lock-Free Concurrency**: Utilizing immutable state (`PersistentMap`) and atomic Compare-And-Swap (CAS) operations
-    via a custom `BoundedConcurrentPriorityQueue`, the engine handles thousands of parallel reads and writes without ever
+    via a custom `ConcurrentPriorityQueue`, the engine handles thousands of parallel reads and writes without ever
     locking a thread.
 4.  **Human-Centric Scoring**: By combining positional weighting (P0 Anchors) with N-gram tokenization, the engine
     seamlessly handles typos, transpositions, and the "Blind Continuation" effect, dynamically yielding a precise Cosine
@@ -412,7 +413,7 @@ The engine is engineered for environments with strict memory and CPU constraints
 
 -   **Memory Efficiency**: Uses primitive parallel arrays (`FloatArray` and `IntArray`) internally instead of object
     wrappers, cutting memory footprint by more than 50%.
--   **Top-K Retrieval**: Built on top of a custom `BoundedConcurrentPriorityQueue` that discards low-priority matches
+-   **Top-K Retrieval**: Built on top of a custom `ConcurrentPriorityQueue` that discards low-priority matches
     instantly without allocation.
 -   **Concurrency**: Uses a Compare-And-Swap (CAS) approach via `MutableStateFlow` and Kotlin's `PersistentMap`. This
     ensures that even if you hammer the engine with 10,000 concurrent `.add()` operations, no data is lost and the thread

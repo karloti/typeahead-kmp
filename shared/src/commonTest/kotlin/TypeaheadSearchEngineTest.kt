@@ -652,7 +652,7 @@ class TypeaheadSearchEngineTest {
     // ─── Use Case 1: Country translations — same key, different text ───
 
     @Test
-    fun `country translations with same code are deduplicated by keySelector`() = runTest {
+    fun `country translations with same code but different text are all stored`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
             keySelector = { it.code }
@@ -662,14 +662,11 @@ class TypeaheadSearchEngineTest {
         engine.add(TranslatedCountry("BG", "България"))
         engine.add(TranslatedCountry("BG", "Bulgarien"))
 
-        assertEquals(1, engine.size, "All three translations share key 'BG', only one should be stored.")
-        val results = engine.find("Bulg")
-        assertEquals(1, results.size, "Only one result expected since all share the same key.")
-        assertEquals("Bulgaria", results.first().first.name, "First-write wins: English name should be kept.")
+        assertEquals(3, engine.size, "Different text+same key = different composite keys, all stored.")
     }
 
     @Test
-    fun `country translations across multiple countries are deduplicated correctly`() = runTest {
+    fun `country translations across multiple countries are all stored when text differs`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
             keySelector = { it.code }
@@ -686,15 +683,14 @@ class TypeaheadSearchEngineTest {
             )
         )
 
-        assertEquals(3, engine.size, "Three unique country codes: BG, DE, FR.")
+        assertEquals(6, engine.size, "Each item has unique composite key (text+code), all stored.")
 
         val allItems = engine.getAllItems()
-        val codes = allItems.map { it.code }.toSet()
-        assertEquals(setOf("BG", "DE", "FR"), codes)
+        assertEquals(6, allItems.size)
     }
 
     @Test
-    fun `contains returns true for any translation of an already-added country`() = runTest {
+    fun `contains checks composite key of text plus code`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
             keySelector = { it.code }
@@ -703,8 +699,12 @@ class TypeaheadSearchEngineTest {
         engine.add(TranslatedCountry("BG", "Bulgaria"))
 
         assertTrue(
+            TranslatedCountry("BG", "Bulgaria") in engine,
+            "Exact same text+code composite key should be found."
+        )
+        assertFalse(
             TranslatedCountry("BG", "България") in engine,
-            "Same code 'BG' should be found even with different name."
+            "Same code but different text = different composite key, not found."
         )
         assertFalse(
             TranslatedCountry("DE", "Germany") in engine,
@@ -845,7 +845,7 @@ class TypeaheadSearchEngineTest {
     // ─── Edge cases ───
 
     @Test
-    fun `different text same key is rejected`() = runTest {
+    fun `different text same key is stored as separate entries`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
             keySelector = { it.code }
@@ -854,13 +854,11 @@ class TypeaheadSearchEngineTest {
         engine.add(TranslatedCountry("BG", "Bulgaria"))
         engine.add(TranslatedCountry("BG", "Wonderland"))
 
-        assertEquals(1, engine.size, "Same key 'BG' regardless of text — second add should be rejected.")
-        val allItems = engine.getAllItems()
-        assertEquals("Bulgaria", allItems.first().name, "First-write wins.")
+        assertEquals(2, engine.size, "Different text+same key = different composite keys, both stored.")
     }
 
     @Test
-    fun `empty text selector still deduplicates by key`() = runTest {
+    fun `empty text and non-empty text with same key are separate entries`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
             keySelector = { it.code }
@@ -869,11 +867,11 @@ class TypeaheadSearchEngineTest {
         engine.add(TranslatedCountry("BG", ""))
         engine.add(TranslatedCountry("BG", "Bulgaria"))
 
-        assertEquals(1, engine.size, "Same key — even with empty text first, second is rejected.")
+        assertEquals(2, engine.size, "Different text (empty vs non-empty) + same key = different composite keys.")
     }
 
     @Test
-    fun `addAll with interleaved duplicate keys keeps only first per key`() = runTest {
+    fun `addAll with interleaved entries stores all unique composite keys`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
             keySelector = { it.code }
@@ -889,7 +887,7 @@ class TypeaheadSearchEngineTest {
             )
         )
 
-        assertEquals(3, engine.size, "Only BG, DE, FR unique codes.")
+        assertEquals(5, engine.size, "Each item has unique composite key (text+code), all stored.")
     }
 
     @Test

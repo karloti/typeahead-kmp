@@ -27,8 +27,6 @@ import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.PersistentSet
 import kotlinx.collections.immutable.persistentHashMapOf
 import kotlinx.collections.immutable.persistentSetOf
-import kotlinx.collections.immutable.toPersistentHashMap
-import kotlinx.collections.immutable.toPersistentHashSet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -88,13 +86,13 @@ class TypeaheadSearchEngine<T, K>(
      * is never a window where one is ahead of the other under concurrent [add]/[remove].
      */
     @PublishedApi
-    internal data class EngineState<T, K>(
+    internal data class EngineState<T>(
         val embeddings: PersistentMap<String, PersistentMap<T, SparseVector>> = persistentHashMapOf(),
-        val keys: PersistentSet<K> = persistentSetOf(),
+        val keys: PersistentSet<String> = persistentSetOf(),
     )
 
     @PublishedApi
-    internal val _state: MutableStateFlow<EngineState<T, K>> = MutableStateFlow(EngineState())
+    internal val _state: MutableStateFlow<EngineState<T>> = MutableStateFlow(EngineState())
     private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
     override val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
     private val _highlightedResults = MutableStateFlow<List<HighlightedMatch<T>>>(emptyList())
@@ -166,14 +164,15 @@ class TypeaheadSearchEngine<T, K>(
      * Adds a single element to the search engine.
      *
      * The item is tokenized via [textSelector] and its vector embedding is computed
-     * and stored in the index. If an item with the same text key already exists,
-     * the new item is merged into the existing inner map rather than replacing it.
+     * and stored in the index. Deduplication is based on the composite key
+     * `textSelector(item) + keySelector(item)`: if an item with the same composite
+     * key already exists, the new item is silently rejected (first-write wins).
      *
      * For bulk insertions, prefer [addAll] which utilizes concurrent processing
      * and batch updates for significantly better throughput.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, uniqueKeySelector = { it })
+     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, keySelector = { it })
      * engine.add("Kotlin")
      * engine.add("Java")
      * engine.size // 2
@@ -182,19 +181,19 @@ class TypeaheadSearchEngine<T, K>(
      * @param item The domain object to index.
      */
     override suspend fun add(item: T): Unit = withContext(defaultDispatcher) {
-        val textKey = textSelector(item)
-        val key = keySelector(item)
+        val str = textSelector(item)
+        val key = str + keySelector(item)
         // Fast pre-check: avoids expensive vectorization for obvious duplicates.
         if (key in _state.value.keys) return@withContext
-        val vector = textKey.toPositionalEmbedding()
+        val vector = str.toPositionalEmbedding()
         // Re-check inside CAS to guarantee correctness under concurrent adds.
-        _state.update { state: EngineState<T, K> ->
+        _state.update { state: EngineState<T> ->
             if (key in state.keys) {
                 state
             } else {
-                val existingMap: PersistentMap<T, SparseVector> = state.embeddings[textKey] ?: persistentHashMapOf()
+                val existingMap: PersistentMap<T, SparseVector> = state.embeddings[str] ?: persistentHashMapOf()
                 state.copy(
-                    embeddings = state.embeddings.put(textKey, existingMap.put(item, vector)),
+                    embeddings = state.embeddings.put(str, existingMap.put(item, vector)),
                     keys = state.keys.add(key)
                 )
             }
@@ -207,7 +206,7 @@ class TypeaheadSearchEngine<T, K>(
      * Delegates to the [Flow]-based [addAll] overload with back-pressured concurrency.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, uniqueKeySelector = { it })
+     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, keySelector = { it })
      * engine.addAll(sequenceOf("Kotlin", "Java", "Scala"))
      * ```
      *
@@ -223,7 +222,7 @@ class TypeaheadSearchEngine<T, K>(
      * Delegates to the [Flow]-based [addAll] overload with back-pressured concurrency.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, uniqueKeySelector = { it })
+     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, keySelector = { it })
      * engine.addAll(listOf("Kotlin", "Java", "Scala"))
      * ```
      *
@@ -241,7 +240,7 @@ class TypeaheadSearchEngine<T, K>(
      * Each worker drains batches of [FIND_BATCH_SIZE] items and vectorizes them concurrently.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, uniqueKeySelector = { it })
+     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, keySelector = { it })
      * val itemsFlow: Flow<MyDto> = repository.streamAll()
      * engine.addAll(itemsFlow) { dto -> dto.name }
      * ```
@@ -309,18 +308,18 @@ class TypeaheadSearchEngine<T, K>(
      * @param item The element to remove.
      */
     override fun remove(item: T) {
-        val textKey = textSelector(item)
-        val key = keySelector(item)
+        val str = textSelector(item)
+        val key = str + keySelector(item)
         _state.update { state ->
             if (key !in state.keys) state
             else {
-                val existing = state.embeddings[textKey] ?: return@update state
+                val existing = state.embeddings[str] ?: return@update state
                 val updated = existing.remove(item)
                 state.copy(
                     embeddings = if (updated.isEmpty()) {
-                        state.embeddings.remove(textKey)
+                        state.embeddings.remove(str)
                     } else {
-                        state.embeddings.put(textKey, updated)
+                        state.embeddings.put(str, updated)
                     },
                     keys = state.keys.remove(key),
                 )
@@ -344,10 +343,10 @@ class TypeaheadSearchEngine<T, K>(
     }
 
     /**
-     * Returns the number of distinct text keys currently indexed in the vector space.
+     * Returns the number of distinct composite keys currently indexed in the vector space.
      *
-     * Note: this counts unique text representations (as produced by [textSelector]),
-     * not individual item objects. Multiple items sharing the same text key are counted once.
+     * Each composite key is formed as `textSelector(item) + keySelector(item)`. Items sharing
+     * the same text but with different keys are counted separately.
      *
      * ```kotlin
      * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"), textSelector = { it })
@@ -358,11 +357,10 @@ class TypeaheadSearchEngine<T, K>(
         get() = _state.value.keys.size
 
     /**
-     * Checks if an item with the same text key is currently indexed in the engine.
+     * Checks if an item with the same composite key is currently indexed in the engine.
      *
-     * The lookup is performed against the text representation produced by [textSelector],
-     * so any item whose text key matches will return `true`. Supports the idiomatic
-     * `in` operator syntax.
+     * The composite key is formed as `textSelector(item) + keySelector(item)`. Both the text
+     * and the key must match for this to return `true`. Supports the idiomatic `in` operator syntax.
      *
      * ```kotlin
      * val engine = TypeaheadSearchEngine(listOf("Kotlin"), textSelector = { it })
@@ -371,10 +369,10 @@ class TypeaheadSearchEngine<T, K>(
      * ```
      *
      * @param item The element to check.
-     * @return `true` if an item with the same text key exists in the index, `false` otherwise.
+     * @return `true` if an item with the same composite key exists in the index, `false` otherwise.
      */
     override operator fun contains(item: T): Boolean {
-        return keySelector(item) in _state.value.keys
+        return (textSelector(item) + keySelector(item)) in _state.value.keys
     }
 
     /**
@@ -393,16 +391,14 @@ class TypeaheadSearchEngine<T, K>(
      */
     override fun getAllItems(): List<T> {
         return _state.value.embeddings.values.flatMap { it.keys }
-
     }
 
     /**
      * Inserts a deserialized [TypeaheadPayload] into the mutable import buffer.
      *
-     * The text key is derived via [textSelector] (casting [A] to [T]). If the buffer
-     * already contains entries for the same text key, the new payload is merged.
+     * The text key is derived via [textSelector]. If the buffer already contains
+     * entries for the same text key, the new payload is merged into the inner map.
      *
-     * @param A The deserialized item type (must be assignment-compatible with [T]).
      * @param buffer The accumulating mutable map used during [importFromSource].
      * @param payload The deserialized payload record to insert.
      */
@@ -569,7 +565,7 @@ class TypeaheadSearchEngine<T, K>(
          * val engine = TypeaheadSearchEngine(
          *     items = listOf(Country(1, "Bulgaria"), Country(2, "Brazil")),
          *     textSelector = { it.name },
-         *     uniqueKeySelector = { it.id }
+         *     keySelector = { it.id }
          * )
          * ```
          *
@@ -695,7 +691,7 @@ class TypeaheadSearchEngine<T, K>(
          *     source = fileSystem.source(snapshotPath),
          *     itemSerializer = Product.serializer(),
          *     textSelector = { it.name },
-         *     uniqueKeySelector = { it.id }
+         *     keySelector = { it.id }
          * )
          * // engine.metadata reflects the configuration stored in the snapshot.
          * val results = engine.find("kotlin") // instant — vectors already loaded
@@ -752,7 +748,7 @@ class TypeaheadSearchEngine<T, K>(
          * @param itemSerializer The [KSerializer] for deserializing items of type [T].
          * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
          * @param defaultDispatcher The coroutine dispatcher used for search computations.
-         * @param json Holen The [Json] instance used for deserialization.
+         * @param json The [Json] instance used for deserialization.
          * @return A fully restored [TypeaheadSearchEngine] with [typeaheadMetadata] set from the stream.
          */
         inline operator fun <reified T> invoke(
@@ -848,7 +844,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
  * ```kotlin
  * val engine = TypeaheadSearchEngine<String, String>(
  *     textSelector = { it },
- *     uniqueKeySelector = { it }
+ *     keySelector = { it }
  * )
  * fileSystem.source(path).use { source ->
  *     engine.importFromSource(source, serializer<String>())
@@ -880,7 +876,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
 
         if (clearExisting) _state.value = TypeaheadSearchEngine.EngineState()
 
-        _state.update { (_embeddings: PersistentMap<String, PersistentMap<T, SparseVector>>, _keys: PersistentSet<K>) ->
+        _state.update { (_embeddings: PersistentMap<String, PersistentMap<T, SparseVector>>, _keys: PersistentSet<String>) ->
             var meta = typeaheadMetadata
             var embeddings = _embeddings
             var keys = _keys
@@ -899,10 +895,11 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
                     is TypeaheadPayload -> {
                         val existing = embeddings[textSelector(item.item)] ?: persistentHashMapOf()
                         embeddings = embeddings.put(textSelector(item.item), existing.put(item.item, item.vector))
-                        keys = keys.add(keySelector(item.item))
+                        keys = keys.add(textSelector(item.item) + keySelector(item.item))
                     }
                 }
             }
+            typeaheadMetadata = meta
             TypeaheadSearchEngine.EngineState(embeddings, keys)
         }
     }
