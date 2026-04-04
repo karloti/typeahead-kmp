@@ -428,6 +428,157 @@ class TypeaheadSearchEngineTest {
         assertContentEquals(listOf("Apple", "Apricot", "Banana"), results.map { it.first })
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  DEDUPLICATION BY textSelector KEY — NEW TESTS FOR EngineState
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `add rejects duplicate items with the same textSelector key`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            keySelector = { it.docId }
+        )
+
+        val first = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1)
+        val duplicate = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 2)
+
+        engine.add(first)
+        engine.add(duplicate)
+
+        assertEquals(1, engine.size, "Only one entry per unique textSelector key.")
+        val results = engine.find("Kotlin")
+        assertEquals(1, results.size)
+        assertEquals(1, results.first().first.version, "First-write wins: version 1 should be kept.")
+    }
+
+    @Test
+    fun `addAll rejects duplicates within a single batch`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            keySelector = { it.docId }
+        )
+
+        engine.addAll(
+            listOf(
+                VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1),
+                VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 2),
+                VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 3),
+                VersionedDocument(docId = "doc-2", title = "Coroutines Deep Dive", version = 1),
+                VersionedDocument(docId = "doc-2", title = "Coroutines Deep Dive", version = 2),
+            )
+        )
+
+        assertEquals(2, engine.size, "Only 2 unique textSelector keys should be stored.")
+        val results = engine.find("Kotlin")
+        assertEquals(2, results.size, "Both entries have non-zero fuzzy scores, so both appear in results.")
+        val titles = results.map { it.first.title }.toSet()
+        assertEquals(setOf("Kotlin Guide", "Coroutines Deep Dive"), titles)
+    }
+
+    @Test
+    fun `concurrent add of same textSelector key stores exactly one`() = runTest(timeout = 1.minutes) {
+        val engine = TypeaheadSearchEngine<String>()
+
+        val jobs = (1..100).map {
+            launch(Dispatchers.Default) {
+                engine.add("DuplicateItem")
+            }
+        }
+        jobs.joinAll()
+
+        assertEquals(1, engine.size, "100 concurrent adds of the same text key must produce exactly 1 entry.")
+    }
+
+    @Test
+    fun `remove then re-add with same textSelector works correctly`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            keySelector = { it.docId }
+        )
+
+        val v1 = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1)
+        val v2 = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 2)
+
+        engine.add(v1)
+        assertEquals(1, engine.size)
+        assertTrue(v1 in engine)
+
+        engine.remove(v1)
+        assertEquals(0, engine.size)
+        assertFalse(v1 in engine)
+
+        engine.add(v2)
+        assertEquals(1, engine.size)
+        val results = engine.find("Kotlin")
+        assertEquals(2, results.first().first.version, "After remove + re-add, version 2 should be stored.")
+    }
+
+    @Test
+    fun `add after addAll respects existing textSelector keys`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+
+        engine.addAll(listOf("Alpha", "Beta", "Gamma"))
+        assertEquals(3, engine.size)
+
+        engine.add("Alpha")
+        engine.add("Beta")
+        engine.add("Delta")
+
+        assertEquals(4, engine.size, "Only Delta should be new; Alpha and Beta should be rejected.")
+    }
+
+    @Test
+    fun `clear resets both embeddings and textKeys then allows re-add`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+
+        engine.addAll(listOf("Alpha", "Beta"))
+        assertEquals(2, engine.size)
+
+        engine.clear()
+        assertEquals(0, engine.size)
+        assertFalse("Alpha" in engine)
+
+        engine.add("Alpha")
+        assertEquals(1, engine.size)
+        assertTrue("Alpha" in engine)
+    }
+
+    @Test
+    fun `getAllItems returns exactly one item per textSelector key`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            keySelector = { it.docId }
+        )
+
+        engine.addAll(
+            listOf(
+                VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1),
+                VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 2),
+                VersionedDocument(docId = "doc-2", title = "Coroutines", version = 1),
+            )
+        )
+
+        val allItems = engine.getAllItems()
+        assertEquals(2, allItems.size, "getAllItems must return one item per unique text key.")
+        val titles = allItems.map { it.title }.toSet()
+        assertEquals(setOf("Kotlin Guide", "Coroutines"), titles)
+    }
+
+    @Test
+    fun `contains checks by textSelector not by object identity`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            keySelector = { it.docId }
+        )
+
+        val v1 = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1)
+        val v2 = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 2)
+
+        engine.add(v1)
+        assertTrue(v1 in engine, "v1 was added, should be found.")
+        assertTrue(v2 in engine, "v2 shares textSelector key with v1, should also report as contained.")
+    }
+
     @Test
     fun `Verify State`() = runTest {
         val searchEngine = TypeaheadSearchEngine<String>()
@@ -451,5 +602,281 @@ class TypeaheadSearchEngineTest {
                 message = "Floating N-gram heatmap must match expected secondary tiers."
             )
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  textSelector / keySelector INTERACTION TESTS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Data class representing a country with a unique code and a translated name.
+     * The code (e.g., "BG") is the unique key, while the name may vary by language.
+     */
+    private data class TranslatedCountry(val code: String, val name: String)
+
+    /**
+     * Data class representing a word occurrence at a specific position in a text file.
+     * The position is the unique key, while the word (textSelector) may repeat.
+     */
+    private data class WordOccurrence(val position: Int, val word: String)
+
+    // ─── Use Case 1: Country translations — same key, different text ───
+
+    @Test
+    fun `country translations with same code are deduplicated by keySelector`() = runTest {
+        val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
+            textSelector = { it.name },
+            keySelector = { it.code }
+        )
+
+        engine.add(TranslatedCountry("BG", "Bulgaria"))
+        engine.add(TranslatedCountry("BG", "България"))
+        engine.add(TranslatedCountry("BG", "Bulgarien"))
+
+        assertEquals(1, engine.size, "All three translations share key 'BG', only one should be stored.")
+        val results = engine.find("Bulg")
+        assertEquals(1, results.size, "Only one result expected since all share the same key.")
+        assertEquals("Bulgaria", results.first().first.name, "First-write wins: English name should be kept.")
+    }
+
+    @Test
+    fun `country translations across multiple countries are deduplicated correctly`() = runTest {
+        val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
+            textSelector = { it.name },
+            keySelector = { it.code }
+        )
+
+        engine.addAll(
+            listOf(
+                TranslatedCountry("BG", "Bulgaria"),
+                TranslatedCountry("BG", "България"),
+                TranslatedCountry("DE", "Germany"),
+                TranslatedCountry("DE", "Deutschland"),
+                TranslatedCountry("DE", "Германия"),
+                TranslatedCountry("FR", "France"),
+            )
+        )
+
+        assertEquals(3, engine.size, "Three unique country codes: BG, DE, FR.")
+
+        val allItems = engine.getAllItems()
+        val codes = allItems.map { it.code }.toSet()
+        assertEquals(setOf("BG", "DE", "FR"), codes)
+    }
+
+    @Test
+    fun `contains returns true for any translation of an already-added country`() = runTest {
+        val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
+            textSelector = { it.name },
+            keySelector = { it.code }
+        )
+
+        engine.add(TranslatedCountry("BG", "Bulgaria"))
+
+        assertTrue(
+            TranslatedCountry("BG", "България") in engine,
+            "Same code 'BG' should be found even with different name."
+        )
+        assertFalse(
+            TranslatedCountry("DE", "Germany") in engine,
+            "Different code 'DE' should not be found."
+        )
+    }
+
+    // ─── Use Case 2: Same text (word), different keys (positions) ───
+
+    @Test
+    fun `same word at different positions are all stored when keys differ`() = runTest {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position }
+        )
+
+        engine.add(WordOccurrence(position = 0, word = "hello"))
+        engine.add(WordOccurrence(position = 5, word = "hello"))
+        engine.add(WordOccurrence(position = 12, word = "hello"))
+
+        assertEquals(3, engine.size, "Three different positions, all should be stored.")
+
+        val allItems = engine.getAllItems()
+        assertEquals(3, allItems.size, "getAllItems should return all three occurrences.")
+
+        val positions = allItems.map { it.position }.toSet()
+        assertEquals(setOf(0, 5, 12), positions)
+    }
+
+    @Test
+    fun `same word same position is not duplicated`() = runTest {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position }
+        )
+
+        engine.add(WordOccurrence(position = 0, word = "hello"))
+        engine.add(WordOccurrence(position = 0, word = "hello"))
+
+        assertEquals(1, engine.size, "Same position key should not produce duplicates.")
+    }
+
+    @Test
+    fun `find returns all occurrences of the same word with different keys`() = runTest {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position },
+            metadata = TypeaheadMetadata(maxResults = 10)
+        )
+
+        engine.add(WordOccurrence(position = 0, word = "kotlin"))
+        engine.add(WordOccurrence(position = 10, word = "kotlin"))
+        engine.add(WordOccurrence(position = 20, word = "kotlin"))
+        engine.add(WordOccurrence(position = 30, word = "java"))
+
+        val results = engine.find("kotlin")
+        val kotlinResults = results.filter { it.first.word == "kotlin" }
+
+        assertEquals(3, kotlinResults.size, "All three 'kotlin' occurrences should appear in results.")
+        val positions = kotlinResults.map { it.first.position }.toSet()
+        assertEquals(setOf(0, 10, 20), positions)
+    }
+
+    // ─── Mixed: same text with some shared keys, some different ───
+
+    @Test
+    fun `mixed scenario same text shared and unique keys`() = runTest {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position }
+        )
+
+        engine.add(WordOccurrence(position = 0, word = "hello"))
+        engine.add(WordOccurrence(position = 5, word = "hello"))
+        engine.add(WordOccurrence(position = 0, word = "hello"))  // duplicate key=0
+        engine.add(WordOccurrence(position = 10, word = "world"))
+
+        assertEquals(3, engine.size, "Keys 0, 5, 10 are unique; duplicate key=0 rejected.")
+    }
+
+    // ─── remove() with shared textSelector — exposes the bug ───
+
+    @Test
+    fun `remove one item does not destroy siblings sharing the same textKey`() = runTest {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position },
+            metadata = TypeaheadMetadata(maxResults = 10)
+        )
+
+        val occ1 = WordOccurrence(position = 0, word = "hello")
+        val occ2 = WordOccurrence(position = 5, word = "hello")
+        val occ3 = WordOccurrence(position = 12, word = "hello")
+
+        engine.add(occ1)
+        engine.add(occ2)
+        engine.add(occ3)
+        assertEquals(3, engine.size)
+
+        // Remove only the first occurrence
+        engine.remove(occ1)
+
+        assertEquals(2, engine.size, "Only occ1 should be removed; occ2 and occ3 should survive.")
+        assertFalse(occ1 in engine, "occ1 was removed.")
+        assertTrue(occ2 in engine, "occ2 should still be present.")
+        assertTrue(occ3 in engine, "occ3 should still be present.")
+
+        // Verify they are still searchable
+        val results = engine.find("hello")
+        assertEquals(2, results.size, "occ2 and occ3 should still appear in search results.")
+        val remainingPositions = results.map { it.first.position }.toSet()
+        assertEquals(setOf(5, 12), remainingPositions)
+    }
+
+    @Test
+    fun `remove with shared textKey then re-add works correctly`() = runTest {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position }
+        )
+
+        val occ1 = WordOccurrence(position = 0, word = "hello")
+        val occ2 = WordOccurrence(position = 5, word = "hello")
+
+        engine.add(occ1)
+        engine.add(occ2)
+        assertEquals(2, engine.size)
+
+        engine.remove(occ1)
+        assertEquals(1, engine.size)
+
+        // Re-add at the same position with the same text
+        val occ1v2 = WordOccurrence(position = 0, word = "hello")
+        engine.add(occ1v2)
+        assertEquals(2, engine.size, "Re-add after remove should work.")
+    }
+
+    // ─── Edge cases ───
+
+    @Test
+    fun `different text same key is rejected`() = runTest {
+        val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
+            textSelector = { it.name },
+            keySelector = { it.code }
+        )
+
+        engine.add(TranslatedCountry("BG", "Bulgaria"))
+        engine.add(TranslatedCountry("BG", "Wonderland"))
+
+        assertEquals(1, engine.size, "Same key 'BG' regardless of text — second add should be rejected.")
+        val allItems = engine.getAllItems()
+        assertEquals("Bulgaria", allItems.first().name, "First-write wins.")
+    }
+
+    @Test
+    fun `empty text selector still deduplicates by key`() = runTest {
+        val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
+            textSelector = { it.name },
+            keySelector = { it.code }
+        )
+
+        engine.add(TranslatedCountry("BG", ""))
+        engine.add(TranslatedCountry("BG", "Bulgaria"))
+
+        assertEquals(1, engine.size, "Same key — even with empty text first, second is rejected.")
+    }
+
+    @Test
+    fun `addAll with interleaved duplicate keys keeps only first per key`() = runTest {
+        val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
+            textSelector = { it.name },
+            keySelector = { it.code }
+        )
+
+        engine.addAll(
+            listOf(
+                TranslatedCountry("BG", "Bulgaria"),
+                TranslatedCountry("DE", "Germany"),
+                TranslatedCountry("BG", "България"),
+                TranslatedCountry("FR", "France"),
+                TranslatedCountry("DE", "Deutschland"),
+            )
+        )
+
+        assertEquals(3, engine.size, "Only BG, DE, FR unique codes.")
+    }
+
+    @Test
+    fun `concurrent adds of same textKey different keys all survive`() = runTest(timeout = 1.minutes) {
+        val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
+            textSelector = { it.word },
+            keySelector = { it.position }
+        )
+
+        val jobs = (1..50).map { pos ->
+            launch(Dispatchers.Default) {
+                engine.add(WordOccurrence(position = pos, word = "concurrent"))
+            }
+        }
+        jobs.joinAll()
+
+        assertEquals(50, engine.size, "50 unique positions with same text should all be stored.")
     }
 }

@@ -24,8 +24,11 @@ import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadPayload
 import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.EPSILON_FLOAT
 import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.FIND_BATCH_SIZE
 import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.PersistentSet
 import kotlinx.collections.immutable.persistentHashMapOf
+import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.collections.immutable.toPersistentHashMap
+import kotlinx.collections.immutable.toPersistentHashSet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -58,7 +61,8 @@ import kotlin.math.sqrt
  */
 
 class TypeaheadSearchEngine<T, K>(
-    private val textSelector: (T) -> String,
+    @PublishedApi
+    internal val textSelector: (T) -> String,
     /**
      * The active configuration of this engine.
      *
@@ -69,7 +73,8 @@ class TypeaheadSearchEngine<T, K>(
      */
     metadata: TypeaheadMetadata = TypeaheadMetadata(),
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    private val keySelector: (T) -> K,
+    @PublishedApi
+    internal val keySelector: (T) -> K,
 ) : TypeaheadSearch<T, K> {
 
     @PublishedApi
@@ -77,10 +82,19 @@ class TypeaheadSearchEngine<T, K>(
     val metadata: TypeaheadMetadata
         get() = typeaheadMetadata
 
-    // Holds the dataset mapped to their pre-computed, normalized spatial vectors
+    /**
+     * Atomic wrapper that keeps embeddings and their text-key index in lock-step.
+     * Both fields are always updated together inside a single CAS operation so there
+     * is never a window where one is ahead of the other under concurrent [add]/[remove].
+     */
     @PublishedApi
-    internal val embeddings: MutableStateFlow<PersistentMap<String, PersistentMap<T, SparseVector>>> =
-        MutableStateFlow(persistentHashMapOf())
+    internal data class EngineState<T, K>(
+        val embeddings: PersistentMap<String, PersistentMap<T, SparseVector>> = persistentHashMapOf(),
+        val keys: PersistentSet<K> = persistentSetOf(),
+    )
+
+    @PublishedApi
+    internal val _state: MutableStateFlow<EngineState<T, K>> = MutableStateFlow(EngineState())
     private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
     override val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
     private val _highlightedResults = MutableStateFlow<List<HighlightedMatch<T>>>(emptyList())
@@ -121,7 +135,7 @@ class TypeaheadSearchEngine<T, K>(
         )
 
         topResultsQueue.addAll(
-            elements = embeddings.value.values
+            elements = _state.value.embeddings.values
                 .asSequence()
                 .flatMap { it.entries.asSequence() }
                 .asFlow(),
@@ -168,12 +182,22 @@ class TypeaheadSearchEngine<T, K>(
      * @param item The domain object to index.
      */
     override suspend fun add(item: T): Unit = withContext(defaultDispatcher) {
-        val stringToVectorize = textSelector(item)
-        val vector = stringToVectorize.toPositionalEmbedding()
-
-        embeddings.update { currentMap ->
-            val existing = currentMap[stringToVectorize] ?: persistentHashMapOf()
-            currentMap.put(stringToVectorize, existing.put(item, vector))
+        val textKey = textSelector(item)
+        val key = keySelector(item)
+        // Fast pre-check: avoids expensive vectorization for obvious duplicates.
+        if (key in _state.value.keys) return@withContext
+        val vector = textKey.toPositionalEmbedding()
+        // Re-check inside CAS to guarantee correctness under concurrent adds.
+        _state.update { state: EngineState<T, K> ->
+            if (key in state.keys) {
+                state
+            } else {
+                val existingMap: PersistentMap<T, SparseVector> = state.embeddings[textKey] ?: persistentHashMapOf()
+                state.copy(
+                    embeddings = state.embeddings.put(textKey, existingMap.put(item, vector)),
+                    keys = state.keys.add(key)
+                )
+            }
         }
     }
 
@@ -285,11 +309,22 @@ class TypeaheadSearchEngine<T, K>(
      * @param item The element to remove.
      */
     override fun remove(item: T) {
-        embeddings.update { currentMap ->
-            val key = textSelector(item)
-            val inner = currentMap[key] ?: return@update currentMap
-            val updated = inner.remove(item)
-            if (updated.isEmpty()) currentMap.remove(key) else currentMap.put(key, updated)
+        val textKey = textSelector(item)
+        val key = keySelector(item)
+        _state.update { state ->
+            if (key !in state.keys) state
+            else {
+                val existing = state.embeddings[textKey] ?: return@update state
+                val updated = existing.remove(item)
+                state.copy(
+                    embeddings = if (updated.isEmpty()) {
+                        state.embeddings.remove(textKey)
+                    } else {
+                        state.embeddings.put(textKey, updated)
+                    },
+                    keys = state.keys.remove(key),
+                )
+            }
         }
     }
 
@@ -305,7 +340,7 @@ class TypeaheadSearchEngine<T, K>(
      * ```
      */
     override fun clear() {
-        embeddings.value = persistentHashMapOf()
+        _state.value = EngineState()
     }
 
     /**
@@ -320,7 +355,7 @@ class TypeaheadSearchEngine<T, K>(
      * ```
      */
     override val size: Int
-        get() = embeddings.value.size
+        get() = _state.value.keys.size
 
     /**
      * Checks if an item with the same text key is currently indexed in the engine.
@@ -339,7 +374,7 @@ class TypeaheadSearchEngine<T, K>(
      * @return `true` if an item with the same text key exists in the index, `false` otherwise.
      */
     override operator fun contains(item: T): Boolean {
-        return embeddings.value.containsKey(textSelector(item))
+        return keySelector(item) in _state.value.keys
     }
 
     /**
@@ -357,7 +392,8 @@ class TypeaheadSearchEngine<T, K>(
      * @return A read-only list of all domain objects.
      */
     override fun getAllItems(): List<T> {
-        return embeddings.value.values.flatMap { it.keys }
+        return _state.value.embeddings.values.flatMap { it.keys }
+
     }
 
     /**
@@ -372,11 +408,11 @@ class TypeaheadSearchEngine<T, K>(
      */
     @Suppress("UNCHECKED_CAST")
     @PublishedApi
-    internal fun <A> addRecordToBuffer(
-        buffer: MutableMap<String, PersistentMap<A, SparseVector>>,
-        payload: TypeaheadPayload<A>
+    internal fun addRecordToBuffer2(
+        buffer: MutableMap<String, PersistentMap<T, SparseVector>>,
+        payload: TypeaheadPayload<T>
     ) {
-        val stringKey = textSelector(payload.item as T)
+        val stringKey = textSelector(payload.item)
         val existingMap = buffer[stringKey] ?: persistentHashMapOf()
         buffer[stringKey] = existingMap.put(payload.item, payload.vector)
     }
@@ -779,12 +815,12 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
         bufferedSink.writeString("  $metaString")
 
         // 2. Lazily iterate and write each payload record
-        embeddings.value.values
+        _state.value.embeddings.values
             .asSequence()
             .flatMap { it.entries }
-            .forEach { entry ->
+            .forEach { (item, vector) ->
                 bufferedSink.writeString(",\n")
-                val payload = TypeaheadPayload(item = entry.key, vector = entry.value)
+                val payload = TypeaheadPayload(item = item, vector = vector)
                 val payloadString = json.encodeToString(polymorphicSerializer, payload)
                 bufferedSink.writeString("  $payloadString")
             }
@@ -835,57 +871,39 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
     clearExisting: Boolean = true,
     json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
 ) {
-    val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
-    val bufferMap = mutableMapOf<String, PersistentMap<T, SparseVector>>()
-
-    source.buffered().use { bufferedSource ->
+    source.buffered().use { bufferedSource: Source ->
         val sequence = json.decodeSourceToSequence(
             source = bufferedSource,
-            deserializer = polymorphicSerializer,
+            deserializer = TypeaheadRecord.serializer(itemSerializer),
             format = DecodeSequenceMode.ARRAY_WRAPPED
         )
 
-        val iterator = sequence.iterator()
+        if (clearExisting) _state.value = TypeaheadSearchEngine.EngineState()
 
-        // 1. Consume the first record (metadata header)
-        if (iterator.hasNext()) {
-            when (val firstItem = iterator.next()) {
-                is TypeaheadMetadata -> {
-                    if (clearExisting) {
-                        typeaheadMetadata = firstItem
-                    } else {
-                        check(firstItem == typeaheadMetadata) {
-                            """Imported metadata does not match engine metadata. To merge records, both must have identical weights and N-gram sizes to ensure consistent scoring. Use clearExisting = true to overwrite the current engine state with the imported one."""
+        _state.update { (_embeddings: PersistentMap<String, PersistentMap<T, SparseVector>>, _keys: PersistentSet<K>) ->
+            var meta = typeaheadMetadata
+            var embeddings = _embeddings
+            var keys = _keys
+            sequence.forEach { item ->
+                when (item) {
+                    is TypeaheadMetadata -> {
+                        if (clearExisting) {
+                            meta = item
+                        } else {
+                            check(item == meta) {
+                                """Imported metadata does not match engine metadata. To merge records, both must have identical weights and N-gram sizes to ensure consistent scoring. Use clearExisting = true to overwrite the current engine state with the imported one."""
+                            }
                         }
                     }
+
+                    is TypeaheadPayload -> {
+                        val existing = embeddings[textSelector(item.item)] ?: persistentHashMapOf()
+                        embeddings = embeddings.put(textSelector(item.item), existing.put(item.item, item.vector))
+                        keys = keys.add(keySelector(item.item))
+                    }
                 }
-
-                is TypeaheadPayload -> {
-                    addRecordToBuffer(bufferMap, firstItem)
-                }
             }
-        }
-
-        // 2. Consume the remaining records (payload entries)
-        iterator.forEach { item ->
-            if (item is TypeaheadPayload) {
-                addRecordToBuffer(bufferMap, item)
-            }
-        }
-    }
-
-    val persistentBuffer = bufferMap.toPersistentHashMap()
-
-    if (clearExisting) {
-        embeddings.value = persistentBuffer
-    } else {
-        embeddings.update { currentMap ->
-            var mergedMap = currentMap
-            persistentBuffer.forEach { (key, innerMap) ->
-                val existingInner = mergedMap[key] ?: persistentHashMapOf()
-                mergedMap = mergedMap.put(key, existingInner.putAll(innerMap))
-            }
-            mergedMap
+            TypeaheadSearchEngine.EngineState(embeddings, keys)
         }
     }
 }
