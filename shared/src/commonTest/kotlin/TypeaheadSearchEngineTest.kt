@@ -580,6 +580,35 @@ class TypeaheadSearchEngineTest {
     }
 
     @Test
+    fun `Verify addAll deduplicates entries with matching unique key`() = runTest {
+        val engine = TypeaheadSearchEngine<VersionedDocument, String>(
+            textSelector = { it.title },
+            keySelector = { it.docId }
+        )
+
+        engine.addAll(
+            listOf(
+                VersionedDocument(docId = "doc-1", title = "Kotlin Multiplatform Guide", version = 1),
+                VersionedDocument(docId = "doc-1", title = "Kotlin Multiplatform Guide", version = 2),
+                VersionedDocument(docId = "doc-1", title = "Kotlin Multiplatform Guide", version = 3),
+                VersionedDocument(docId = "doc-2", title = "Advanced Kotlin Coroutines", version = 1),
+                VersionedDocument(docId = "doc-2", title = "Advanced Kotlin Coroutines", version = 2),
+            )
+        )
+        val state = engine._state.value.embeddings
+        assertEquals(2, state.size)
+
+        val results = engine.find("Kotlin")
+
+        assertEquals(2, results.size, "Results must contain exactly 2 unique documents by docId.")
+
+        val uniqueIds = results.map { it.first.docId }.toSet()
+        assertEquals(2, uniqueIds.size)
+        assertTrue(uniqueIds.contains("doc-1"))
+        assertTrue(uniqueIds.contains("doc-2"))
+    }
+
+    @Test
     fun `Verify State`() = runTest {
         val searchEngine = TypeaheadSearchEngine<String>()
         searchEngine.add("Bulgaria")
