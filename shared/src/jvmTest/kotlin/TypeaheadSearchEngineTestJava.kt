@@ -103,7 +103,7 @@ class TypeaheadSearchEngineTestJava {
         )
 
         // Capture search results before export for comparison
-        val resultsBeforeExport = searchEngine.find(query)
+        val resultsBeforeExport = searchEngine.find(query).value
 
         // ---------------------------------------------------------
         // STREAMING EXPORT
@@ -164,7 +164,7 @@ class TypeaheadSearchEngineTestJava {
         assertEquals(targetSize, newSearchEngine.size, "Imported engine should contain exactly $targetSize products.")
 
         // Verify the imported engine produces identical results
-        val resultsAfterImport = newSearchEngine.find(query)
+        val resultsAfterImport = newSearchEngine.find(query).value
 
         assertEquals(
             resultsBeforeExport.size,

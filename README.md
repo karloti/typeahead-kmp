@@ -37,7 +37,7 @@ Add the dependency to your `build.gradle.kts` in the `commonMain` source set:
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.karloti:typeahead-kmp:1.8.1")  // Replace it with the latest version
+            implementation("io.github.karloti:typeahead-kmp:1.9.0")  // Replace it with the latest version
         }
     }
 }
@@ -86,7 +86,7 @@ val searchEngineFromList = TypeaheadSearchEngine(
 val searchEngineFromFlow = TypeaheadSearchEngine(
     items = flowOf(Country(id = 3, countryName = "Germany"), Country(id = 4, countryName = "France")),
     textSelector = Country::countryName,
-    uniqueKeySelector = Country::id
+    keySelector = Country::id
 )
 
 // Add a single item dynamically
@@ -98,37 +98,50 @@ searchEngineFromList.addAll(listOf(Country(id = 5, countryName = "Japan"), Count
 
 ### 2. Searching with Highlights
 
-Retrieve matches along with a character-level heatmap for UI highlighting. The search results are exposed via `StateFlow`s for reactive UI updates.
+The `find()` method updates the internal `query`, performs the search, and returns a `StateFlow` of ranked results.
+Results are also **automatically refreshed** when items are added or removed while a query is active — no additional
+`find()` call is needed.
 
 ```kotlin
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
-// Perform a search
 runBlocking {
-    val results = searchEngineFromList.find("buglaria") // Returns a List<Pair<T, Float>>
-    println("Direct find results: $results")
+    // 1. Perform a search — returns StateFlow<List<Pair<T, Float>>>
+    val resultsFlow = searchEngineFromList.find("buglaria")
 
-    // Access the StateFlow for reactive updates
-    val highlightedResults = searchEngineFromList.highlightedResults.first() // Get current value
-    highlightedResults.forEach { match ->
-        val highlightedText = match.heatmap.renderHighlightedString(match.item.countryName)
-        val score = match.score
-        val formattedScore = score.toString().take(5)
-        println(" Score: $formattedScore | Match: $highlightedText")
+    // 2. Read the current results snapshot
+    val results = resultsFlow.value
+    println("Top results: $results")
+
+    // 3. Generate a character-level heatmap and render with ANSI colors
+    results.forEach { (country, score) ->
+        val heatmap = searchEngineFromList.heatmap(country.countryName)   // uses the stored query
+        val highlighted = heatmap?.toHighlightedString() ?: country.countryName
+        println(" Score: ${score.toString().take(5)} | Match: $highlighted")
     }
 }
 ```
 
+The `heatmap()` method uses the engine's stored query to compute a per-character match tier for any
+candidate string. Each character is paired with one of four tiers:
+
+*   **TIER_PRIMARY (0)**: Exact positional match — the character is in the correct position.
+*   **TIER_SECONDARY (1)**: Contiguous N-gram — part of a matching block found elsewhere in the string.
+*   **TIER_TERTIARY (2)**: Skip-gram — a scattered single-character match (the "fuzzy bridge").
+*   **TIER_NONE (-1)**: Unmatched — the character was not matched by the query.
+
+Call `toHighlightedString()` on the heatmap to render it with ANSI colors for terminal output,
+or map the tiers to your own UI styling (e.g., Jetpack Compose `AnnotatedString`, SwiftUI `Text`).
+
 ![visualizing-heatmap](assets/visualizing-heatmap.png)
 
-**Visualizing the Heatmap**: The heatmap array maps each character to a visual tier (e.g., exact match, skipped, wrong),
-allowing you to build beautiful, intuitive UI highlights like the one below:
+**Visualizing the Heatmap**: The heatmap pairs each character with a visual tier (exact match, N-gram block, skip-gram,
+or unmatched), allowing you to build beautiful, intuitive UI highlights like the one below:
 
 ### 3. Exporting & Importing State (Eliminating Cold Starts)
 
 Avoid recalculating vectors on the client device by pre-computing them on your backend or during the build process, then
-shipping a static JSON file. The engine supports streaming export and import using `kotlinx.io` and `kotlinx.serialization`.
+shipping a static JSONL file. The engine supports streaming export and import using `kotlinx.io` and `kotlinx.serialization`.
 
 ### Exporting:
 
@@ -140,7 +153,7 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.files.sink
 
 // 1. Define a path for your exported data
-val path = Path("typeahead_countries.json")
+val path = Path("typeahead_countries.jsonl")
 
 // 2. Export the engine's internal state to a Sink (e.g., a file)
 SystemFileSystem.sink(path).buffered().use { sink ->
@@ -302,9 +315,9 @@ matches.
 2.  **Intelligent Fallback**: The CLI first checks for an exact match. If the user makes a typo (e.g., typing `Typeahed`
     instead of `Typeahead`), the exact search fails, and the engine immediately falls back to its vector space search to
     find the nearest neighbors.
-3.  **Visual Heatmap Highlighting**: This example showcases the true power of the engine's `highlightedResults` API.
-    After calling `find()`, the engine exposes an `IntArray` spatial heatmap for each match via the `highlightedResults` StateFlow. The CLI uses this
-    data to render color-coded terminal output:
+3.  **Visual Heatmap Highlighting**: This example showcases the true power of the engine's `heatmap()` API.
+    After calling `find()`, the engine stores the query internally. Calling `heatmap(text)` computes a per-character
+    match tier list, and `toHighlightedString()` renders it with ANSI colors for terminal output:
 
 *   🟩 **Solid Prefix**: Exact starting matches.
 *   🟨 **Floating N-Gram**: Contiguous blocks of characters found in the middle of the word.

@@ -21,6 +21,8 @@ import com.github.ajalt.mordant.terminal.Terminal
 import com.github.ajalt.mordant.widgets.HorizontalRule
 import com.github.ajalt.mordant.widgets.Text
 import io.github.karloti.typeahead.TypeaheadSearchEngine
+import io.github.karloti.typeahead.toHeatmap
+import io.github.karloti.typeahead.toHighlightedString
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.update
 import kotlinx.cli.ArgParser
@@ -69,7 +71,6 @@ fun main(args: Array<String>) = runBlocking {
 
     parser.parse(args)
 
-    val errorStyle = (brightRed + TextStyles.bold)
     val infoStyle = cyan
     val successStyle = (brightGreen + TextStyles.bold)
     val pathStyle = gray
@@ -168,7 +169,7 @@ fun main(args: Array<String>) = runBlocking {
         }
     } else {
         searchEngine.find(targetName)
-        val matches = searchEngine.highlightedResults.value
+        val matches = searchEngine.results.value
         t.println(yellow("No exact match found. Possible suggestions (${matches.size}):"))
         t.println()
 
@@ -179,26 +180,14 @@ fun main(args: Array<String>) = runBlocking {
         t.println("  " + gray("■") + " Unmatched character")
         t.println()
 
-        matches.forEach { match ->
-            val highlightedName = match.heatmap.renderHighlightedWithMordant(match.item.name)
-            t.println("  " + highlightedName + TextStyles.dim(" (score: ${match.score})"))
-            t.println(pathStyle("  └─ ${match.item}"))
+        matches.forEach { (path, score) ->
+            val highlightedName = targetName.toHeatmap(path.name).toHighlightedString(path.name)
+            t.println("  " + highlightedName + TextStyles.dim(" (score: ${score})"))
+            t.println(pathStyle("  └─ $path"))
             t.println()
         }
 
         t.println(HorizontalRule(ruleStyle = gray))
         t.println(TextStyles.italic("Tip: If you are looking for a specific file, use its full name."))
     }
-}
-
-fun IntArray.renderHighlightedWithMordant(text: String): String {
-    return text.mapIndexed { index, char ->
-        val tier = if (index < this.size) this[index] else -1
-        when (tier) {
-            0 -> brightYellow(char.toString())
-            1 -> yellow(char.toString())
-            2 -> cyan(char.toString())
-            else -> gray(char.toString())
-        }
-    }.joinToString("")
 }

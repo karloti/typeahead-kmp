@@ -51,7 +51,7 @@ class FindBenchmarkTest {
         rounds: Int = if (LOCAL) 3 else 2,
     ): Duration {
         repeat(warmup) { engine.find(query) }
-        val times = (1..rounds).map { measureTime { engine.find(query) } }
+        val times = (1..rounds).map { measureTime { engine.find(query).value } }
         return times.sorted()[times.size / 2]
     }
 
@@ -255,7 +255,7 @@ class FindBenchmarkTest {
 
         for (query in queries) {
             val seqTime = benchmarkFind(engine, query, rounds = 2)
-            val hits = engine.find(query).size
+            val hits = engine.find(query).value.size
             val nsPerItem = seqTime.inWholeNanoseconds.toDouble() / largeDatasetSize
 
             println(
@@ -281,8 +281,8 @@ class FindBenchmarkTest {
         val queries = listOf("Premium", "Budget Food", "Ultra Sports", "Mini", "Pro Electronics Item")
 
         for (query in queries) {
-            val seqResults = engine.find(query)
-            val parResults = engine.find(query)
+            val seqResults = engine.find(query).value
+            val parResults = engine.find(query).value
 
             assertEquals(seqResults.size, parResults.size, "Result count must match for query=\"$query\"")
 

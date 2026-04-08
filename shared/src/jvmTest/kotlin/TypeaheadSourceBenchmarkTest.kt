@@ -89,7 +89,7 @@ class TypeaheadSourceBenchmarkTest {
         val memInsert = (runtime.totalMemory() - runtime.freeMemory() - memBeforeInsert) / 1024 / 1024
         assertEquals(targetSize, original.size)
 
-        val originalResults = original.find(query)
+        val originalResults = original.find(query).value
 
         // ── 2. Export to temp file ────────────────────────────────────────────
         val tempFile = File.createTempFile("typeahead_source_bench_", ".json")
@@ -145,7 +145,7 @@ class TypeaheadSourceBenchmarkTest {
             // an engine built via addAll() and one restored via importFromSource(), even
             // though both hold identical content. Sorting by score then by id removes
             // this ambiguity while fully verifying correctness.
-            val restoredResults = restored.find(query)
+            val restoredResults = restored.find(query).value
             assertEquals(
                 originalResults.size, restoredResults.size,
                 "Result count must match"
@@ -229,8 +229,8 @@ class TypeaheadSourceBenchmarkTest {
             assertEquals(customMetadata.maxResults, restored.metadata.maxResults)
             assertEquals(customMetadata.maxNgramSize, restored.metadata.maxNgramSize)
 
-            val origQ = original.find(query)
-            val restQ = restored.find(query)
+            val origQ = original.find(query).value
+            val restQ = restored.find(query).value
             assertEquals(
                 origQ.map { it.second }, restQ.map { it.second },
                 "Scores must be identical after restore"
@@ -313,9 +313,9 @@ class TypeaheadSourceBenchmarkTest {
             // ── Correctness ───────────────────────────────────────────────────
             assertEquals(targetSize, importedEngine.size)
             assertEquals(targetSize, factoryEngine.size)
-            val ref = engine.find(query)
-            val fromImport = importedEngine.find(query)
-            val fromFactory = factoryEngine.find(query)
+            val ref = engine.find(query).value
+            val fromImport = importedEngine.find(query).value
+            val fromFactory = factoryEngine.find(query).value
             assertEquals(ref.map { it.second }, fromImport.map { it.second })
             assertEquals(ref.map { it.second }, fromFactory.map { it.second })
             assertEquals(metadata.maxResults, factoryEngine.metadata.maxResults)

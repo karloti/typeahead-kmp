@@ -52,7 +52,6 @@ interface TypeaheadSearch<T, K> {
      * A [StateFlow] containing the latest search results with character-level heatmaps
      * for UI highlighting, updated after each [find] call.
      */
-    val highlightedResults: StateFlow<List<HighlightedMatch<T>>>
 
     /**
      * The number of distinct text keys currently indexed in the vector space.
@@ -63,25 +62,23 @@ interface TypeaheadSearch<T, K> {
     val size: Int
 
     /**
-     * Finds the top matching elements for the given query using cosine similarity.
+     * Updates the active query and performs a cosine-similarity search against all
+     * indexed embeddings, storing the ranked matches in the [results] `StateFlow`.
      *
-     * The query string is vectorized into a [SparseVector] and compared against all
-     * indexed embeddings via dot-product. A bounded priority queue retains only the
-     * top results. Both [results] and [highlightedResults] are updated upon completion.
-     *
-     * Returns an empty list for blank queries.
+     * Blank queries clear the result set immediately. The returned [StateFlow] is the
+     * same [results] instance, allowing callers to either read `.value` once or collect
+     * it reactively for live updates.
      *
      * ```kotlin
-     * val matches = engine.find("Kot")
-     * // matches[0] == ("Kotlin" to 0.95f)
+     * val results: StateFlow<List<Pair<String, Float>>> = engine.find("Kot")
+     * // results.value[0] == ("Kotlin" to 0.95f)
      * ```
      *
      * @param query The user's input string to search for.
-     * @return A descending-score list of pairs containing the matched object and its
-     *         similarity score `[0.0, 1.0]`.
-     * @throws kotlinx.coroutines.CancellationException if the coroutine scope is cancelled.
+     * @return The [results] `StateFlow` containing descending-score pairs of matched
+     *         objects and their similarity scores `[0.0, 1.0]`.
      */
-    suspend fun find(query: String): List<Pair<T, Float>>
+    suspend fun find(query: String): StateFlow<List<Pair<T, Float>>>
 
     /**
      * Adds a single element to the search engine.

@@ -30,7 +30,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.8.1"
+val projectVersion = "1.9.0"
 version = projectVersion
 
 kotlin {
@@ -139,6 +139,7 @@ kotlin {
             implementation(libs.kotlinx.atomicfu)
             implementation(libs.karloti.concurrent.priority.queue)
             implementation(libs.kotlinx.io.core)
+            runtimeOnly("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.10.0")
         }
 
         commonTest.dependencies {

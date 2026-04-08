@@ -17,19 +17,28 @@
 package io.github.karloti.typeahead
 
 /**
- * Renders the highlighted match in the console using ANSI color codes.
- * This provides a visual representation of the L2 vector matching heatmap.
+ * Renders this heatmap as an ANSI-colored string for terminal output.
  *
- * Each character in the original [text] is wrapped with an ANSI color code
- * corresponding to its tier in the heatmap (the receiver [IntArray]).
+ * Each `(Char, Int)` pair in the receiver list is wrapped with the ANSI escape sequence
+ * that corresponds to its match tier, producing a single string ready for `println()`.
+ * Color parameters are fully customizable, so the same function can target any terminal
+ * or be adapted to non-ANSI renderers by passing plain-text markers.
  *
- * Tiers mapping to colors:
- * - [TypeaheadSearchEngine.TIER_PRIMARY] (0) -> [brightYellow] (Exact prefix/solid match)
- * - [TypeaheadSearchEngine.TIER_SECONDARY] (1) -> [standardYellow] (Floating N-gram match)
- * - [TypeaheadSearchEngine.TIER_TERTIARY] (2) -> [cyan] (Skip-gram / Fuzzy bridge)
- * - [TypeaheadSearchEngine.TIER_NONE] (-1) -> [dimGray] (Unmatched character)
+ * Tier-to-color mapping:
+ * - [TypeaheadSearchEngine.TIER_PRIMARY] (0) -> [brightYellow] — Exact positional match.
+ * - [TypeaheadSearchEngine.TIER_SECONDARY] (1) -> [standardYellow] — Contiguous N-gram block.
+ * - [TypeaheadSearchEngine.TIER_TERTIARY] (2) -> [cyan] — Scattered skip-gram match.
+ * - [TypeaheadSearchEngine.TIER_NONE] (-1) -> [dimGray] — Unmatched character.
  *
- * @param text The original string to be formatted.
+ * ### Example:
+ * ```kotlin
+ * val engine = TypeaheadSearchEngine(listOf("Sofia", "Tokyo"), textSelector = { it })
+ * engine.find("Sfoia")
+ * val heatmap = engine.heatmap("Sofia")  // [('S', 0), ('o', 1), ('f', 1), ('i', 1), ('a', 0)]
+ * println(heatmap?.toHighlightedString()) // prints "Sofia" with colored characters
+ * ```
+ *
+ * @receiver A heatmap list produced by [TypeaheadSearchEngine.heatmap] or [String.toHeatmap].
  * @param reset The ANSI escape sequence to reset colors. Defaults to `\u001B[0m`.
  * @param brightYellow The ANSI escape sequence for bright yellow. Defaults to `\u001B[93m`.
  * @param standardYellow The ANSI escape sequence for standard yellow. Defaults to `\u001B[33m`.
@@ -37,19 +46,18 @@ package io.github.karloti.typeahead
  * @param dimGray The ANSI escape sequence for dim gray. Defaults to `\u001B[90m`.
  * @return A visually colored string ready for console output.
  */
-fun IntArray.renderHighlightedString(
-    text: String,
+fun List<Pair<Char, Int>>.toHighlightedString(
     reset:String = "\u001B[0m",
     brightYellow:String = "\u001B[93m",
     standardYellow:String = "\u001B[33m",
     cyan:String = "\u001B[36m",
     dimGray:String = "\u001B[90m",
-): String = text.mapIndexed { index, char ->
-    val color = when (this[index]) {
+): String = joinToString("") { (char, tier) ->
+    val color = when (tier) {
         TypeaheadSearchEngine.TIER_PRIMARY -> brightYellow
         TypeaheadSearchEngine.TIER_SECONDARY -> standardYellow
         TypeaheadSearchEngine.TIER_TERTIARY -> cyan
         else -> dimGray
     }
     "$color$char$reset"
-}.joinToString("")
+}

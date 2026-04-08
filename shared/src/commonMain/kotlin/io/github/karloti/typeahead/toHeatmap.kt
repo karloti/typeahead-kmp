@@ -19,9 +19,10 @@ package io.github.karloti.typeahead
 import kotlin.math.min
 
 /**
- * Computes a character-level "heatmap" array that visually represents how well this query string
- * matches against a target string. The heatmap uses a **multi-tier matching algorithm** inspired
- * by human cognitive pattern recognition during typeahead scenarios.
+ * Computes a character-level heatmap that visually represents how well this query string
+ * matches against a target string. Each character in the target is paired with a tier value
+ * indicating match quality. The heatmap uses a **multi-tier matching algorithm** inspired by
+ * human cognitive pattern recognition during typeahead scenarios.
  *
  * This function implements a **greedy, three-phase alignment strategy**:
  *
@@ -48,32 +49,32 @@ import kotlin.math.min
  * ```kotlin
  * val query = "Sfoia"
  * val target = "Sofia"
- * val heatmap = query.computeHeatmap(target)
- * // heatmap = [0, 1, 1, 1, 0]
- * //            S  f  o  i  a
+ * val heatmap = query.toHeatmap(target)
+ * // heatmap = [('S', 0), ('f', 1), ('o', 1), ('i', 1), ('a', 0)]
  * // Tier 0: 'S' and 'a' are exact positional matches
  * // Tier 1: 'f', 'o', 'i' form a contiguous block match
  * ```
  *
+ * @receiver The query string typed by the user (e.g., "Sfoia").
  * @param targetStr The candidate string to match against (e.g., "Sofia").
  * @param ignoreCase Whether to perform case-insensitive matching. Defaults to `true`.
- * @return An [IntArray] where each index corresponds to a character in [targetStr], and
- *         the value represents the match tier:
+ * @return A [List] of [Pair]s where each entry maps a character from [targetStr] to its
+ *         match tier:
  *         - [TypeaheadSearchEngine.Companion.TIER_PRIMARY] (0): Exact positional match.
  *         - [TypeaheadSearchEngine.Companion.TIER_SECONDARY] (1): Part of a contiguous N-gram block.
  *         - [TypeaheadSearchEngine.Companion.TIER_TERTIARY] (2): Scattered single-character match.
  *         - [TypeaheadSearchEngine.Companion.TIER_NONE] (-1): Unmatched character (default).
  */
-internal fun String.computeHeatmap(
+fun String.toHeatmap(
     targetStr: String,
     ignoreCase: Boolean = true
-): IntArray {
+): List<Pair<Char, Int>> {
     val q = this
     val queryLen = q.length
     val targetLen = targetStr.length
 
     // The final heatmap array to return
-    val heatmap = IntArray(targetLen) { TypeaheadSearchEngine.TIER_NONE }
+    val heatmapInts = IntArray(targetLen) { TypeaheadSearchEngine.TIER_NONE }
 
     // Primitive boolean arrays to act as our "remaining pool".
     // True means the character has been matched and removed from the pool.
@@ -86,7 +87,7 @@ internal fun String.computeHeatmap(
     val minLen = min(queryLen, targetLen)
     for (i in 0 until minLen) {
         if (q[i].equals(targetStr[i], ignoreCase)) {
-            heatmap[i] = TypeaheadSearchEngine.TIER_PRIMARY
+            heatmapInts[i] = TypeaheadSearchEngine.TIER_PRIMARY
             qConsumed[i] = true
             tConsumed[i] = true
         }
@@ -125,7 +126,7 @@ internal fun String.computeHeatmap(
         // If we found a valid N-gram block (2 or more characters)
         if (bestMatchLen >= 2) {
             for (k in 0 until bestMatchLen) {
-                heatmap[bestTargetIdx + k] = TypeaheadSearchEngine.TIER_SECONDARY
+                heatmapInts[bestTargetIdx + k] = TypeaheadSearchEngine.TIER_SECONDARY
                 qConsumed[i + k] = true
                 tConsumed[bestTargetIdx + k] = true
             }
@@ -139,7 +140,7 @@ internal fun String.computeHeatmap(
 
         for (j in 0 until targetLen) {
             if (!tConsumed[j] && q[i].equals(targetStr[j], ignoreCase)) {
-                heatmap[j] = TypeaheadSearchEngine.TIER_TERTIARY
+                heatmapInts[j] = TypeaheadSearchEngine.TIER_TERTIARY
 
                 // Mark as consumed so it cannot be reused
                 qConsumed[i] = true
@@ -148,7 +149,6 @@ internal fun String.computeHeatmap(
             }
         }
     }
-
     // Step 4 is implicit: Anything left unconsumed in the target remains TIER_NONE (Dim Gray).
-    return heatmap
+    return targetStr.mapIndexed { index, ch -> ch to heatmapInts[index] }
 }

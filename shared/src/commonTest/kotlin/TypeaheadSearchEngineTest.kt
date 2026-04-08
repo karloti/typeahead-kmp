@@ -16,7 +16,8 @@
 
 import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadMetadata
 import io.github.karloti.typeahead.TypeaheadSearchEngine
-import io.github.karloti.typeahead.renderHighlightedString
+import io.github.karloti.typeahead.toHeatmap
+import io.github.karloti.typeahead.toHighlightedString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
@@ -177,24 +178,27 @@ class TypeaheadSearchEngineTest {
         val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 1))
         searchEngine.add("Bulgaria")
 
-        searchEngine.find("blugaria")
-        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
-            println("Top match heatmap: ${topMatch.contentToString()}")
-            val expectedHeatmap = intArrayOf(0, 2, 2, 0, 0, 0, 0, 0)
-            assertTrue(
-                actual = expectedHeatmap.contentEquals(topMatch),
-                message = "Floating N-gram heatmap must match expected secondary tiers."
-            )
-        }
-        searchEngine.find("bulgira ")
-        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
-            println("Top match heatmap: ${topMatch.contentToString()}")
-            val expectedHeatmap = intArrayOf(0, 0, 0, 0, 2, 0, 2, -1)
-            assertTrue(
-                actual = expectedHeatmap.contentEquals(topMatch),
-                message = "Floating N-gram heatmap must match expected secondary tiers."
-            )
-        }
+        var query = "blugaria"
+        searchEngine.find(query)
+        var heatmap = query.toHeatmap(searchEngine.results.value.first().first)
+            .map { it.second }
+        var expectedHeatmap = listOf(0, 2, 2, 0, 0, 0, 0, 0)
+        assertContentEquals(
+            expected = expectedHeatmap,
+            actual = heatmap,
+            message = "Floating N-gram heatmap must match expected secondary tiers."
+        )
+
+        query = "bulgira "
+        searchEngine.find(query)
+        heatmap = searchEngine.results.value.first().first.toHeatmap(query)
+            .map { it.second }
+        expectedHeatmap = listOf(0, 0, 0, 0, 2, 0, 2, -1)
+        assertContentEquals(
+            expected = expectedHeatmap,
+            actual = heatmap,
+            message = "Floating N-gram heatmap must match expected secondary tiers."
+        )
     }
 
     @Test
@@ -243,20 +247,15 @@ class TypeaheadSearchEngineTest {
 
         for (query in typingSimulation) {
             searchEngine.find(query)
-            val topMatch = searchEngine.highlightedResults.value.firstOrNull()
+            val (topMatch, score) = searchEngine.results.value.firstOrNull() ?: continue
 
-            if (topMatch != null) {
-                // Render the colored string
-                val highlightedText = topMatch.heatmap.renderHighlightedString(topMatch.item)
+            val highlightedText = query.toHeatmap(topMatch).toHighlightedString(topMatch)
 
-                // Format score to 4 decimal places for clean UI alignment
-                val formattedScore = topMatch.score.toString().take(5)
-                val paddedQuery = query.padEnd(8, ' ')
+            // Format score to 4 decimal places for clean UI alignment
+            val formattedScore = score.toString().take(5)
+            val paddedQuery = query.padEnd(8, ' ')
 
-                println(" Query: [$paddedQuery] | Score: $formattedScore | Match: $highlightedText")
-            } else {
-                println(" Query: [${query.padEnd(8, ' ')}] | No match found.")
-            }
+            println(" Query: [$paddedQuery] | Score: $formattedScore | Match: $highlightedText")
         }
         println("=======================================================\n")
 
@@ -309,11 +308,12 @@ class TypeaheadSearchEngineTest {
             val paddedQuery = query.padEnd(8, ' ')
             println(" Query: [\u001B[35m${paddedQuery}\u001B[0m]")
             searchEngine.find(query)
-            searchEngine.highlightedResults.value.forEach { highlightedMatch ->
-                val highlightedText = highlightedMatch.heatmap
-                    .renderHighlightedString(text = highlightedMatch.item.countryName)
+            searchEngine.results.value.forEach { (result, score) ->
+                val highlightedText = query
+                    .toHeatmap(result.countryName)
+                    .toHighlightedString()
                 // Format score to 4 decimal places for clean UI alignment
-                val formattedScore = highlightedMatch.score.toString().take(5)
+                val formattedScore = score.toString().take(5)
                 println(" Score: $formattedScore | Match: $highlightedText")
             }
             println("-------------------------------------------------------")
@@ -392,7 +392,7 @@ class TypeaheadSearchEngineTest {
             )
         )
 
-        val results = engine.find("Kotlin")
+        val results = engine.find("Kotlin").value
 
         assertEquals(3, results.size)
 
@@ -422,7 +422,7 @@ class TypeaheadSearchEngineTest {
                 "Apricot"
             )
         )
-        val results = engine.find("Ap")
+        val results = engine.find("Ap").value
 
         assertEquals(3, engine.size)
         assertContentEquals(listOf("Apple", "Apricot", "Banana"), results.map { it.first })
@@ -446,7 +446,7 @@ class TypeaheadSearchEngineTest {
         engine.add(duplicate)
 
         assertEquals(1, engine.size, "Only one entry per unique textSelector key.")
-        val results = engine.find("Kotlin")
+        val results = engine.find("Kotlin").value
         assertEquals(1, results.size)
         assertEquals(1, results.first().first.version, "First-write wins: version 1 should be kept.")
     }
@@ -469,7 +469,7 @@ class TypeaheadSearchEngineTest {
         )
 
         assertEquals(2, engine.size, "Only 2 unique textSelector keys should be stored.")
-        val results = engine.find("Kotlin")
+        val results = engine.find("Kotlin").value
         assertEquals(2, results.size, "Both entries have non-zero fuzzy scores, so both appear in results.")
         val titles = results.map { it.first.title }.toSet()
         assertEquals(setOf("Kotlin Guide", "Coroutines Deep Dive"), titles)
@@ -509,7 +509,7 @@ class TypeaheadSearchEngineTest {
 
         engine.add(v2)
         assertEquals(1, engine.size)
-        val results = engine.find("Kotlin")
+        val results = engine.find("Kotlin").value
         assertEquals(2, results.first().first.version, "After remove + re-add, version 2 should be stored.")
     }
 
@@ -595,10 +595,10 @@ class TypeaheadSearchEngineTest {
                 VersionedDocument(docId = "doc-2", title = "Advanced Kotlin Coroutines", version = 2),
             )
         )
-        val state = engine._state.value.embeddings
+        val state = engine.state.value.embeddings
         assertEquals(2, state.size)
 
-        val results = engine.find("Kotlin")
+        val results = engine.find("Kotlin").value
 
         assertEquals(2, results.size, "Results must contain exactly 2 unique documents by docId.")
 
@@ -613,21 +613,27 @@ class TypeaheadSearchEngineTest {
         val searchEngine = TypeaheadSearchEngine<String>()
         searchEngine.add("Bulgaria")
 
+        val query = "blugaria"
         searchEngine.find("blugaria")
-        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
-            println("Top match heatmap: ${topMatch.contentToString()}")
-            val expectedHeatmap = intArrayOf(0, 2, 2, 0, 0, 0, 0, 0)
-            assertTrue(
-                actual = expectedHeatmap.contentEquals(topMatch),
-                message = "Floating N-gram heatmap must match expected secondary tiers."
-            )
-        }
-        searchEngine.find("bulgira ")
-        searchEngine.highlightedResults.value.first().heatmap.let { topMatch ->
-            println("Top match heatmap: ${topMatch.contentToString()}")
-            val expectedHeatmap = intArrayOf(0, 0, 0, 0, 2, 0, 2, -1)
-            assertTrue(
-                actual = expectedHeatmap.contentEquals(topMatch),
+        searchEngine.results.value.first().first.toHeatmap(query)
+            .map { it.second }
+            .let { topMatch ->
+                val expectedHeatmap = listOf(0, 2, 2, 0, 0, 0, 0, 0)
+                assertContentEquals(
+                    expected = expectedHeatmap,
+                    actual = topMatch,
+                    message = "Floating N-gram heatmap must match expected secondary tiers."
+                )
+            }
+        val query1 = "bulgira "
+        searchEngine.find(query1)
+        searchEngine.results.value.first().first.toHeatmap(query1)
+            .map { it.second }
+            .let { topMatch ->
+            val expectedHeatmap = listOf(0, 0, 0, 0, 2, 0, 2, -1)
+            assertContentEquals(
+                expected = expectedHeatmap,
+                actual = topMatch,
                 message = "Floating N-gram heatmap must match expected secondary tiers."
             )
         }
@@ -760,7 +766,7 @@ class TypeaheadSearchEngineTest {
         engine.add(WordOccurrence(position = 20, word = "kotlin"))
         engine.add(WordOccurrence(position = 30, word = "java"))
 
-        val results = engine.find("kotlin")
+        val results = engine.find("kotlin").value
         val kotlinResults = results.filter { it.first.word == "kotlin" }
 
         assertEquals(3, kotlinResults.size, "All three 'kotlin' occurrences should appear in results.")
@@ -813,7 +819,7 @@ class TypeaheadSearchEngineTest {
         assertTrue(occ3 in engine, "occ3 should still be present.")
 
         // Verify they are still searchable
-        val results = engine.find("hello")
+        val results = engine.find("hello").value
         assertEquals(2, results.size, "occ2 and occ3 should still appear in search results.")
         val remainingPositions = results.map { it.first.position }.toSet()
         assertEquals(setOf(5, 12), remainingPositions)

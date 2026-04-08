@@ -39,6 +39,7 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.DecodeSequenceMode
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.io.decodeSourceToSequence
+import kotlinx.serialization.json.io.encodeToSink
 import kotlinx.serialization.serializer
 import kotlin.math.abs
 import kotlin.math.min
@@ -59,8 +60,7 @@ import kotlin.math.sqrt
  */
 
 class TypeaheadSearchEngine<T, K>(
-    @PublishedApi
-    internal val textSelector: (T) -> String,
+    val textSelector: (T) -> String,
     /**
      * The active configuration of this engine.
      *
@@ -70,9 +70,8 @@ class TypeaheadSearchEngine<T, K>(
      * so the engine's configuration is always consistent with its indexed vectors.
      */
     metadata: TypeaheadMetadata = TypeaheadMetadata(),
-    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    @PublishedApi
-    internal val keySelector: (T) -> K,
+    val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    val keySelector: (T) -> K,
 ) : TypeaheadSearch<T, K> {
 
     @PublishedApi
@@ -92,38 +91,28 @@ class TypeaheadSearchEngine<T, K>(
     )
 
     @PublishedApi
-    internal val _state: MutableStateFlow<EngineState<T>> = MutableStateFlow(EngineState())
+    internal val state: MutableStateFlow<EngineState<T>> = MutableStateFlow(EngineState())
     private val _results = MutableStateFlow<List<Pair<T, Float>>>(emptyList())
     override val results: StateFlow<List<Pair<T, Float>>> = _results.asStateFlow()
-    private val _highlightedResults = MutableStateFlow<List<HighlightedMatch<T>>>(emptyList())
-    override val highlightedResults: StateFlow<List<HighlightedMatch<T>>> = _highlightedResults.asStateFlow()
 
-    /**
-     * Finds the top matching elements for the given query using cosine similarity.
-     *
-     * The query string is vectorized into a [SparseVector] and compared against all
-     * indexed embeddings via dot-product (equivalent to cosine similarity for L2-normalized
-     * vectors). A bounded priority queue retains only the top [TypeaheadMetadata.maxResults] matches.
-     *
-     * Upon completion, both [results] and [highlightedResults] `StateFlow`s are updated
-     * with the new result set. Returns an empty list for blank queries.
-     *
-     * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java", "Koka"), textSelector = { it })
-     * val matches = engine.find("Kot")
-     * // matches[0] == ("Kotlin" to 0.95f)  — highest cosine similarity
-     * ```
-     *
-     * @param query The user's input string to search for.
-     * @return A descending-score list of pairs containing the matched object and its similarity score `[0.0, 1.0]`.
-     * @throws CancellationException if the coroutine scope is canceled during execution.
-     */
-    override suspend fun find(
-        query: String,
-    ): List<Pair<T, Float>> = withContext(defaultDispatcher) {
-        if (query.isBlank()) return@withContext emptyList()
+    private val _query = MutableStateFlow<String?>(null)
+    val query: StateFlow<String?> = _query.asStateFlow()
 
-        val queryVector = query.toPositionalEmbedding()
+    private val scope = CoroutineScope(defaultDispatcher + SupervisorJob())
+
+    init {
+        scope.launch {
+            state.collectLatest {
+                val currentQuery = _query.value
+                if (!currentQuery.isNullOrBlank()) {
+                    _results.value = performSearch(currentQuery)
+                }
+            }
+        }
+    }
+
+    private suspend fun performSearch(query: String): List<Pair<T, Float>> = withContext(defaultDispatcher) {
+        val queryVector = embedding(query)
 
         val topResultsQueue = ConcurrentPriorityQueue(
             maxSize = typeaheadMetadata.maxResults,
@@ -133,7 +122,7 @@ class TypeaheadSearchEngine<T, K>(
         )
 
         topResultsQueue.addAll(
-            elements = _state.value.embeddings.values
+            elements = state.value.embeddings.values
                 .asSequence()
                 .flatMap { it.entries.asSequence() }
                 .asFlow(),
@@ -143,21 +132,67 @@ class TypeaheadSearchEngine<T, K>(
             },
         )
 
-        _results.value = topResultsQueue.items.value
-        _highlightedResults.value = topResultsQueue.items.value.map { match ->
-            val targetText = textSelector(match.first)
-            val heatmap = query.computeHeatmap(
-                targetStr = targetText,
-                ignoreCase = typeaheadMetadata.ignoreCase,
-            )
-            HighlightedMatch(
-                item = match.first,
-                score = match.second,
-                heatmap = heatmap,
-            )
-        }
-
         topResultsQueue.items.value
+    }
+
+    /**
+     * Updates the active [query] and performs a cosine-similarity search against all
+     * indexed embeddings, storing the ranked matches in the [results] `StateFlow`.
+     *
+     * The query string is vectorized into a [SparseVector] and compared against all
+     * indexed embeddings via dot-product (equivalent to cosine similarity for L2-normalized
+     * vectors). A bounded priority queue retains only the top [TypeaheadMetadata.maxResults] matches.
+     * Blank queries clear the result set immediately.
+     *
+     * Because the engine also observes [state] changes, the [results] flow
+     * is automatically refreshed when items are added or removed while a non-blank query
+     * is active — no additional [find] call is needed.
+     *
+     * ```kotlin
+     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java", "Koka"), textSelector = { it })
+     * val results: StateFlow<List<Pair<String, Float>>> = engine.find("Kot")
+     * // results.value[0] == ("Kotlin" to 0.95f)  — highest cosine similarity
+     * ```
+     *
+     * @param query The user's input string to search for.
+     * @return The [results] `StateFlow` containing descending-score pairs of matched
+     *         objects and their similarity scores `[0.0, 1.0]`.
+     */
+    override suspend fun find(
+        query: String,
+    ): StateFlow<List<Pair<T, Float>>> {
+        _query.value = query
+        if (query.isBlank()) {
+            _results.value = emptyList()
+        } else {
+            _results.value = performSearch(query)
+        }
+        return results
+    }
+
+    /**
+     * Computes a character-level heatmap for the given [text] against the current [query].
+     *
+     * Delegates to [String.toHeatmap] using the active query value. Returns `null` if
+     * no query has been set yet.
+     *
+     * ```kotlin
+     * engine.find("Kot")
+     * val heatmap: List<Pair<Char, Int>>? = engine.heatmap("Kotlin")
+     * // heatmap == [('K', 0), ('o', 0), ('t', 0), ('l', -1), ('i', -1), ('n', -1)]
+     * // Tier 0: 'K', 'o', 't' are exact positional matches
+     * ```
+     *
+     * @param text The candidate string to match against the current query.
+     * @param ignoreCase Whether to perform case-insensitive matching. Defaults to [TypeaheadMetadata.ignoreCase].
+     * @return A [List] of [Pair]s mapping each character to its match tier, or `null` if no query is active.
+     */
+    fun heatmap(
+        text: String,
+        ignoreCase: Boolean = typeaheadMetadata.ignoreCase
+    ): List<Pair<Char, Int>>? {
+        val currentQuery = _query.value ?: return null
+        return currentQuery.toHeatmap(targetStr = text, ignoreCase = ignoreCase)
     }
 
     /**
@@ -184,10 +219,10 @@ class TypeaheadSearchEngine<T, K>(
         val str = textSelector(item)
         val key = str + keySelector(item)
         // Fast pre-check: avoids expensive vectorization for obvious duplicates.
-        if (key in _state.value.keys) return@withContext
-        val vector = str.toPositionalEmbedding()
+        if (key in state.value.keys) return@withContext
+        val vector = embedding(str)
         // Re-check inside CAS to guarantee correctness under concurrent adds.
-        _state.update { state: EngineState<T> ->
+        state.update { state: EngineState<T> ->
             if (key in state.keys) {
                 state
             } else {
@@ -310,7 +345,7 @@ class TypeaheadSearchEngine<T, K>(
     override fun remove(item: T) {
         val str = textSelector(item)
         val key = str + keySelector(item)
-        _state.update { state ->
+        state.update { state ->
             if (key !in state.keys) state
             else {
                 val existing = state.embeddings[str] ?: return@update state
@@ -339,7 +374,7 @@ class TypeaheadSearchEngine<T, K>(
      * ```
      */
     override fun clear() {
-        _state.value = EngineState()
+        state.value = EngineState()
     }
 
     /**
@@ -354,7 +389,7 @@ class TypeaheadSearchEngine<T, K>(
      * ```
      */
     override val size: Int
-        get() = _state.value.keys.size
+        get() = state.value.keys.size
 
     /**
      * Checks if an item with the same composite key is currently indexed in the engine.
@@ -372,7 +407,7 @@ class TypeaheadSearchEngine<T, K>(
      * @return `true` if an item with the same composite key exists in the index, `false` otherwise.
      */
     override operator fun contains(item: T): Boolean {
-        return (textSelector(item) + keySelector(item)) in _state.value.keys
+        return (textSelector(item) + keySelector(item)) in state.value.keys
     }
 
     /**
@@ -390,31 +425,11 @@ class TypeaheadSearchEngine<T, K>(
      * @return A read-only list of all domain objects.
      */
     override fun getAllItems(): List<T> {
-        return _state.value.embeddings.values.flatMap { it.keys }
+        return state.value.embeddings.values.flatMap { it.keys }
     }
 
     /**
-     * Inserts a deserialized [TypeaheadPayload] into the mutable import buffer.
-     *
-     * The text key is derived via [textSelector]. If the buffer already contains
-     * entries for the same text key, the new payload is merged into the inner map.
-     *
-     * @param buffer The accumulating mutable map used during [importFromSource].
-     * @param payload The deserialized payload record to insert.
-     */
-    @Suppress("UNCHECKED_CAST")
-    @PublishedApi
-    internal fun addRecordToBuffer2(
-        buffer: MutableMap<String, PersistentMap<T, SparseVector>>,
-        payload: TypeaheadPayload<T>
-    ) {
-        val stringKey = textSelector(payload.item)
-        val existingMap = buffer[stringKey] ?: persistentHashMapOf()
-        buffer[stringKey] = existingMap.put(payload.item, payload.vector)
-    }
-
-    /**
-     * Generates an L2-normalized hybrid positional N-gram embedding from the receiver string.
+     * Generates an L2-normalized hybrid positional N-gram embedding from the given string.
      *
      * Constructs a [SparseVector] with 32-bit floating-point precision by extracting
      * 8 feature categories: P0 anchors, length buckets, gestalt anchors, strict prefixes,
@@ -424,13 +439,19 @@ class TypeaheadSearchEngine<T, K>(
      * This is a cooperative suspend function that yields periodically during the prefix
      * and N-gram loops to remain cancellation-responsive on large strings.
      *
-     * @receiver The input string to embed (lowercased internally).
+     * ```kotlin
+     * val engine = TypeaheadSearchEngine<String, String>(textSelector = { it }, keySelector = { it })
+     * val vector: SparseVector = engine.embedding("Kotlin")
+     * // vector is L2-normalized and ready for dot-product similarity
+     * ```
+     *
+     * @param text The input string to embed (lowercased internally).
      * @return An L2-normalized [SparseVector], or an empty vector if the string is blank
      *         or the computed magnitude is below [EPSILON_FLOAT].
      */
-    private suspend fun String.toPositionalEmbedding(): SparseVector {
+    suspend fun embedding(text: String): SparseVector {
         val vector = mutableMapOf<String, Float>()
-        val word = this.lowercase()
+        val word = text.lowercase()
         val length = word.length
 
         if (length == 0) return SparseVector(emptyArray(), FloatArray(0))
@@ -776,10 +797,10 @@ class TypeaheadSearchEngine<T, K>(
 }
 
 /**
- * Exports the current engine state as a streaming JSON array to the given [Sink].
+ * Exports the current engine state as newline-delimited JSON (JSONL) to the given [Sink].
  *
- * The output is a JSON array where the first element is a [TypeaheadMetadata] header
- * and all subsequent elements are [TypeaheadPayload] records. The streaming approach
+ * Each line is a standalone [TypeaheadRecord]: the first line is a [TypeaheadMetadata]
+ * header and all subsequent lines are [TypeaheadPayload] records. The streaming approach
  * ensures constant memory usage regardless of the dataset size.
  *
  * The exported data can be restored via [importFromSource].
@@ -791,7 +812,7 @@ class TypeaheadSearchEngine<T, K>(
  * }
  * ```
  *
- * @param sink The [Sink] to write the JSON array to.
+ * @param sink The [Sink] to write the JSONL stream to.
  * @param itemSerializer The [KSerializer] for serializing items of type [T].
  * @param json The [Json] instance used for serialization.
  */
@@ -801,44 +822,34 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
     json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
 ) {
     val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
-
-    sink.buffered().use { bufferedSink ->
-        // Open JSON array
-        bufferedSink.writeString("[\n")
-
-        // 1. Write metadata as the first element
-        val metaString = json.encodeToString(polymorphicSerializer, typeaheadMetadata)
-        bufferedSink.writeString("  $metaString")
-
-        // 2. Lazily iterate and write each payload record
-        _state.value.embeddings.values
+    val records: Sequence<TypeaheadRecord<T>> = sequence {
+        yield(typeaheadMetadata)
+        state.value.embeddings.values
             .asSequence()
             .flatMap { it.entries }
-            .forEach { (item, vector) ->
-                bufferedSink.writeString(",\n")
-                val payload = TypeaheadPayload(item = item, vector = vector)
-                val payloadString = json.encodeToString(polymorphicSerializer, payload)
-                bufferedSink.writeString("  $payloadString")
-            }
-
-        // Close JSON array
-        bufferedSink.writeString("\n]")
+            .forEach { (item, vector) -> yield(TypeaheadPayload(item = item, vector = vector)) }
+    }
+    sink.buffered().use { bufferedSink ->
+        records.forEach { record ->
+            json.encodeToSink(serializer = polymorphicSerializer, value = record, sink = bufferedSink)
+            bufferedSink.writeString("\n")
+        }
     }
 }
-
 
 /**
  * Restores the engine state by streaming records from a [Source], bypassing vectorization.
  *
- * Deserializes a JSON array previously produced by [exportToSink]. The first element is
- * expected to be a [TypeaheadMetadata] header; all subsequent elements are [TypeaheadPayload]
- * records whose pre-computed vectors are loaded directly into the index.
+ * Deserializes a JSONL (or JSON-array) stream previously produced by [exportToSink].
+ * The first record is expected to be a [TypeaheadMetadata] header; all subsequent records
+ * are [TypeaheadPayload] entries whose pre-computed vectors are loaded directly into the index.
+ * The format is auto-detected via [DecodeSequenceMode.AUTO_DETECT].
  *
  * **Metadata handling:**
  * - `clearExisting = true` (default): [typeaheadMetadata] is replaced by the value read from the
  *   stream, so the engine's configuration is always consistent with its indexed vectors.
- * - `clearExisting = false`: the imported [TypeaheadMetadata.maxNgramSize] must equal the
- *   engine's current value; merging vectors produced with a different N-gram size would
+ * - `clearExisting = false`: the imported metadata must exactly match the engine's current
+ *   metadata; merging vectors produced with different weights or N-gram sizes would
  *   corrupt cosine-similarity scores.
  *
  * ```kotlin
@@ -852,13 +863,12 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
  * // engine.metadata now reflects the configuration stored in the file.
  * ```
  *
- * @param T The type of the serialized items (must be assignment-compatible with [T] at runtime).
- * @param source The [Source] to read the JSON array from.
+ * @param source The [Source] to read the JSONL stream from.
  * @param itemSerializer The [KSerializer] for item deserialization.
  * @param clearExisting If `true`, replaces the current index and [typeaheadMetadata]; if `false`, merges records.
  * @param json The [Json] instance used for deserialization.
  * @throws IllegalStateException if [clearExisting] is `false` and the imported
- *         [TypeaheadMetadata.maxNgramSize] differs from the engine's current value.
+ *         metadata differs from the engine's current metadata.
  */
 @Suppress("UNCHECKED_CAST")
 inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
@@ -871,12 +881,12 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
         val sequence = json.decodeSourceToSequence(
             source = bufferedSource,
             deserializer = TypeaheadRecord.serializer(itemSerializer),
-            format = DecodeSequenceMode.ARRAY_WRAPPED
+            format = DecodeSequenceMode.AUTO_DETECT
         )
 
-        if (clearExisting) _state.value = TypeaheadSearchEngine.EngineState()
+        if (clearExisting) state.value = TypeaheadSearchEngine.EngineState()
 
-        _state.update { (_embeddings: PersistentMap<String, PersistentMap<T, SparseVector>>, _keys: PersistentSet<String>) ->
+        state.update { (_embeddings: PersistentMap<String, PersistentMap<T, SparseVector>>, _keys: PersistentSet<String>) ->
             var meta = typeaheadMetadata
             var embeddings = _embeddings
             var keys = _keys
