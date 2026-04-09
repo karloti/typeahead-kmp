@@ -28,14 +28,28 @@ sealed interface TypeaheadRecord<out T> {
      *
      * @param T The type of the user-defined element.
      * @param item The original element stored in the engine.
-     * @param vector The pre-computed, L2-normalized sparse vector for this element.
+     * @param tokens The ordered list of tokens extracted from the item's text representation.
      */
     @Serializable
     @SerialName("payload")
     data class TypeaheadPayload<T>(
         val item: T,
-        val vector: SparseVector
+        val tokens: List<String>
     ) : TypeaheadRecord<T>
+
+    /**
+     * A single entry from the shared vocabulary (Flyweight cache).
+     * Maps a unique lowercase token to its pre-computed, L2-normalized sparse vector.
+     *
+     * @property token The lowercase token string.
+     * @property vector The pre-computed [SparseVector] for this token.
+     */
+    @Serializable
+    @SerialName("vocab")
+    data class TypeaheadVocabularyEntry(
+        val token: String,
+        val vector: SparseVector
+    ) : TypeaheadRecord<Nothing>
 
     /**
      * Configuration settings for the [TypeaheadSearchEngine] that control the behavior and weighting of the fuzzy search algorithm.

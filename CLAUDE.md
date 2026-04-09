@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `typeahead-kmp` is a Kotlin Multiplatform fuzzy/typeahead search engine library published to Maven Central. It targets JVM, Android, iOS, tvOS, watchOS, macOS, Linux, Windows (mingwX64), JavaScript, and WebAssembly (wasmJs, wasmWasi).
 
-**Group:** `io.github.karloti` | **Artifact:** `typeahead-kmp` | **Current version:** see `shared/build.gradle.kts`
+**Group:** `io.github.karloti` | **Artifact:** `typeahead-kmp` | **Current version:** `1.9.0` (defined in `shared/build.gradle.kts` as `projectVersion`)
 
 ## Build & Test Commands
 
@@ -41,17 +41,21 @@ find(query) → query SparseVector · stored SparseVectors → BoundedConcurrent
 _results: MutableStateFlow  /  _highlightedResults: MutableStateFlow
 ```
 
-### Key Classes
+### Key Classes & Files
 
-**`TypeaheadSearchEngine<T, K>`** (`shared/src/commonMain/kotlin/`) — Main entry point. Holds all indexed embeddings in a lock-free `AtomicRef<PersistentMap>`. Exposes `results` and `highlightedResults` as `StateFlow` for reactive UIs. The constructor accepts weight parameters for the 8 feature types and a text/key selector.
+All source lives in package `io.github.karloti.typeahead` under `shared/src/commonMain/kotlin/`.
+
+**`TypeaheadSearch<T, K>`** — Interface defining the search engine contract.
+
+**`TypeaheadSearchEngine<T, K>`** — Main entry point (implements `TypeaheadSearch`). Holds all indexed embeddings in a lock-free `AtomicRef<PersistentMap>`. Exposes `results` and `highlightedResults` as `StateFlow` for reactive UIs. The constructor accepts weight parameters for the 8 feature types and a text/key selector.
 
 **`SparseVector`** — Alphabetically sorted `Array<String>` of feature names paired with a `FloatArray` of L2-normalized weights. The sorted order enables O(K) two-pointer cosine similarity via `dotProduct()`.
 
-**`TypeaheadRecord<T>`** — Serializable snapshot of `(item, SparseVector)` used for fast import/export (bypasses re-vectorization).
+**`TypeaheadRecord<T>`** — `@Serializable` snapshot of `(item, SparseVector)` used for fast import/export (bypasses re-vectorization).
 
-**`HighlightedMatch<T>`** — Search result with a character-level `IntArray` heatmap (4 tiers: TIER_PRIMARY, TIER_SECONDARY, TIER_TERTIARY, TIER_NONE) for UI highlighting.
+**`toHeatmap.kt`** — `String.toHeatmap()` extension function. Three-phase greedy alignment (Exact → N-Grams → Skip-Grams) producing a `List<Pair<Char, Int>>` heatmap (4 tiers: TIER_PRIMARY, TIER_SECONDARY, TIER_TERTIARY, TIER_NONE).
 
-**`computeHeatmap.kt`** — Three-phase greedy alignment (Exact → N-Grams → Skip-Grams) producing the heatmap `IntArray`.
+**`toHighlightedString.kt`** — `List<Pair<Char, Int>>.toHighlightedString()` extension for rendering heatmaps as ANSI-colored terminal output.
 
 ### Embedding Feature Types
 
@@ -78,4 +82,8 @@ Use `exportAsSequence()` / `importFromSequence()` to snapshot and restore the se
 
 - Minimum Android API: 24; minimum JVM target: 11.
 - Publishing to Maven Central requires signed publications — `SONATYPE_USERNAME`, `SONATYPE_PASSWORD`, and signing keys must be configured.
-- The `TypeaheadSearchEngineNew.kt` file in `commonMain` is currently staged as deleted (`AD` in git status) — do not restore it.
+- Platform-specific CLI demo code (mordant, kotlinx-cli, okio) lives in `mingwX64Main` and `linuxX64Main` source sets only — not in `commonMain`.
+
+## Issue Tracking
+
+Task management and roadmap are tracked in YouTrack: [Typeahead KMP Issues & Roadmap](https://smartcoding.youtrack.cloud/projects/typeahead_kmp)

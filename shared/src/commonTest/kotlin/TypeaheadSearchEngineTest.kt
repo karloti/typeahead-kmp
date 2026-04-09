@@ -68,7 +68,7 @@ val countries = listOf(
 /**
  * Set to `true` for intensive local runs, `false` for lightweight CI (GitHub Actions).
  */
-const val LOCAL = false
+const val LOCAL = true
 
 class TypeaheadSearchEngineTest {
 
@@ -595,7 +595,7 @@ class TypeaheadSearchEngineTest {
                 VersionedDocument(docId = "doc-2", title = "Advanced Kotlin Coroutines", version = 2),
             )
         )
-        val state = engine.state.value.embeddings
+        val state = engine.state.value.forwardIndex
         assertEquals(2, state.size)
 
         val results = engine.find("Kotlin").value

@@ -19,14 +19,11 @@
 package io.github.karloti.typeahead
 
 import io.github.karloti.cpq.ConcurrentPriorityQueue
-import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadMetadata
-import io.github.karloti.typeahead.TypeaheadRecord.TypeaheadPayload
+import io.github.karloti.typeahead.TypeaheadRecord.*
 import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.EPSILON_FLOAT
 import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.FIND_BATCH_SIZE
 import kotlinx.collections.immutable.PersistentMap
-import kotlinx.collections.immutable.PersistentSet
 import kotlinx.collections.immutable.persistentHashMapOf
-import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -80,14 +77,29 @@ class TypeaheadSearchEngine<T, K>(
         get() = typeaheadMetadata
 
     /**
-     * Atomic wrapper that keeps embeddings and their text-key index in lock-step.
-     * Both fields are always updated together inside a single CAS operation so there
+     * Atomic wrapper that keeps all indices in lock-step.
+     * All fields are always updated together inside a single CAS operation so there
      * is never a window where one is ahead of the other under concurrent [add]/[remove].
+     *
+     * All inner maps are keyed by a String `docId` (produced by [generateDocId])
+     * instead of the generic `T`. This avoids the **PersistentMap Key Trap**: complex
+     * user objects with expensive `hashCode()`/`equals()` would otherwise multiply
+     * into massive latency across the 100 000+ `put` operations that indexing triggers.
+     * Strings cache their hash after the first call, making every subsequent
+     * HAMT traversal O(1).
+     *
+     * @property vocabulary Flyweight cache: maps a unique lowercase token to its [SparseVector].
+     * @property invertedIndex Maps a vocabulary token → docId → list of positions.
+     * @property forwardIndex Maps a docId to its original ordered list of tokens.
+     * @property documentStore Maps a docId to the user's domain object [T], accessed only
+     *           once per matching document when building the final result list.
      */
     @PublishedApi
     internal data class EngineState<T>(
-        val embeddings: PersistentMap<String, PersistentMap<T, SparseVector>> = persistentHashMapOf(),
-        val keys: PersistentSet<String> = persistentSetOf(),
+        val vocabulary: PersistentMap<String, SparseVector> = persistentHashMapOf(),
+        val invertedIndex: PersistentMap<String, PersistentMap<String, List<Int>>> = persistentHashMapOf(),
+        val forwardIndex: PersistentMap<String, List<String>> = persistentHashMapOf(),
+        val documentStore: PersistentMap<String, T> = persistentHashMapOf(),
     )
 
     @PublishedApi
@@ -112,24 +124,115 @@ class TypeaheadSearchEngine<T, K>(
     }
 
     private suspend fun performSearch(query: String): List<Pair<T, Float>> = withContext(defaultDispatcher) {
-        val queryVector = embedding(query)
+        val currentState = state.value
+        val queryTokens = tokenize(query)
+        if (queryTokens.isEmpty()) return@withContext emptyList()
 
+        // Stage 1: For each query token, compute vector and find candidate vocabulary words
+        val queryVectors = queryTokens.map { embedding(it) }
+
+        val candidatesByQueryToken: List<List<Pair<String, Float>>> = queryTokens.mapIndexed { idx, queryToken ->
+            val qVector = queryVectors[idx]
+            val isLastToken = (idx == queryTokens.lastIndex)
+
+            if (!isLastToken) {
+                // Completed word: try exact lookup, fall back to fuzzy
+                val exactVector = currentState.vocabulary[queryToken]
+                if (exactVector != null) {
+                    listOf(queryToken to (qVector dotProduct exactVector))
+                } else {
+                    currentState.vocabulary.entries
+                        .map { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
+                        .filter { it.second > EPSILON_FLOAT }
+                        .sortedByDescending { it.second }
+                        .take(TOP_K_VOCAB)
+                }
+            } else {
+                // Last token (possibly partial): fuzzy scan over vocabulary
+                currentState.vocabulary.entries
+                    .map { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
+                    .filter { it.second > EPSILON_FLOAT }
+                    .sortedByDescending { it.second }
+                    .take(TOP_K_VOCAB)
+            }
+        }
+
+        // Stage 2: Gather candidate docIds from inverted index
+        val candidateDocIds = mutableSetOf<String>()
+        for (tokenCandidates in candidatesByQueryToken) {
+            for ((vocabWord, _) in tokenCandidates) {
+                currentState.invertedIndex[vocabWord]?.keys?.let { candidateDocIds.addAll(it) }
+            }
+        }
+
+        // Fallback: if candidate set is smaller than maxResults, broaden to all items
+        // to ensure we fill result slots (mirrors the old exhaustive-scan behavior)
+        if (candidateDocIds.size < typeaheadMetadata.maxResults) {
+            currentState.documentStore.keys.forEach { candidateDocIds.add(it) }
+        }
+
+        if (candidateDocIds.isEmpty()) return@withContext emptyList()
+
+        // Stage 3: Score each candidate using MaxSim + positional bonuses
         val topResultsQueue = ConcurrentPriorityQueue(
             maxSize = typeaheadMetadata.maxResults,
             dispatcher = defaultDispatcher,
-            comparator = compareByDescending { it.second },
+            comparator = compareByDescending<Pair<T, Float>> { it.second }
+                .thenBy { it.first.hashCode() },
             keySelector = { it: Pair<T, Float> -> keySelector(it.first) }
         )
 
         topResultsQueue.addAll(
-            elements = state.value.embeddings.values
-                .asSequence()
-                .flatMap { it.entries.asSequence() }
-                .asFlow(),
-            transform = { (item, targetVector) ->
-                val score = queryVector dotProduct targetVector
-                item to score
-            },
+            elements = candidateDocIds.asSequence().asFlow(),
+            transform = { docId ->
+                val item = currentState.documentStore[docId]!!
+                val docTokens = currentState.forwardIndex[docId]!!
+
+                var totalScore = 0.0f
+                var lastMatchPosition = -1
+
+                for (queryToken in queryTokens) {
+                    // Забележка за оптимизация: qVector може да се изчисли веднъж извън ламбдата
+                    val qVector = embedding(queryToken)
+
+                    var bestScore = 0.0f
+                    var bestPosition = -1
+
+                    for ((index, docToken) in docTokens.withIndex()) {
+                        val dVector = currentState.vocabulary[docToken] ?: continue
+
+                        val score = qVector dotProduct dVector
+
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestPosition = index
+                        }
+                    }
+
+                    // Smart Positional Encoding: Само позитивен бонус, без наказание за глобален ред
+                    if (bestScore > 0f && lastMatchPosition != -1) {
+                        if (bestPosition == lastMatchPosition + 1) {
+                            bestScore *= (1.0f + ADJACENCY_BONUS)
+                        }
+                    }
+
+                    if (bestScore > 0f) {
+                        lastMatchPosition = bestPosition
+                    }
+
+                    totalScore += bestScore
+                }
+
+                // Универсална нормализация за дължина (BM25 Inspired)
+                val baseScore = totalScore / queryTokens.size
+
+                val logDocLength = kotlin.math.log10(docTokens.size.toFloat().coerceAtLeast(1f))
+                val lengthPenaltyModifier = 1.0f - (0.1f * logDocLength)
+
+                val finalScore = baseScore * lengthPenaltyModifier.coerceAtLeast(0.5f)
+
+                item to finalScore
+            }
         )
 
         topResultsQueue.items.value
@@ -216,20 +319,43 @@ class TypeaheadSearchEngine<T, K>(
      * @param item The domain object to index.
      */
     override suspend fun add(item: T): Unit = withContext(defaultDispatcher) {
-        val str = textSelector(item)
-        val key = str + keySelector(item)
+        val docId = generateDocId(item)
         // Fast pre-check: avoids expensive vectorization for obvious duplicates.
-        if (key in state.value.keys) return@withContext
-        val vector = embedding(str)
+        if (docId in state.value.documentStore) return@withContext
+
+        val tokens = tokenize(textSelector(item))
+        // Pre-compute embeddings for tokens not yet in the vocabulary
+        val newVocabEntries = mutableMapOf<String, SparseVector>()
+        for (token in tokens.distinct()) {
+            if (token !in state.value.vocabulary) {
+                newVocabEntries[token] = embedding(token)
+            }
+        }
+
         // Re-check inside CAS to guarantee correctness under concurrent adds.
-        state.update { state: EngineState<T> ->
-            if (key in state.keys) {
-                state
+        state.update { s: EngineState<T> ->
+            if (docId in s.documentStore) {
+                s
             } else {
-                val existingMap: PersistentMap<T, SparseVector> = state.embeddings[str] ?: persistentHashMapOf()
-                state.copy(
-                    embeddings = state.embeddings.put(str, existingMap.put(item, vector)),
-                    keys = state.keys.add(key)
+                var vocab = s.vocabulary
+                for ((token, vector) in newVocabEntries) {
+                    if (token !in vocab) {
+                        vocab = vocab.put(token, vector)
+                    }
+                }
+
+                var inverted = s.invertedIndex
+                tokens.forEachIndexed { position, token ->
+                    val existing = inverted[token] ?: persistentHashMapOf()
+                    val positions = existing[docId] ?: emptyList()
+                    inverted = inverted.put(token, existing.put(docId, positions + position))
+                }
+
+                s.copy(
+                    vocabulary = vocab,
+                    invertedIndex = inverted,
+                    forwardIndex = s.forwardIndex.put(docId, tokens),
+                    documentStore = s.documentStore.put(docId, item),
                 )
             }
         }
@@ -343,20 +469,28 @@ class TypeaheadSearchEngine<T, K>(
      * @param item The element to remove.
      */
     override fun remove(item: T) {
-        val str = textSelector(item)
-        val key = str + keySelector(item)
-        state.update { state ->
-            if (key !in state.keys) state
+        val docId = generateDocId(item)
+        state.update { s ->
+            if (docId !in s.documentStore) s
             else {
-                val existing = state.embeddings[str] ?: return@update state
-                val updated = existing.remove(item)
-                state.copy(
-                    embeddings = if (updated.isEmpty()) {
-                        state.embeddings.remove(str)
+                val tokens = s.forwardIndex[docId]
+                    ?: return@update s.copy(documentStore = s.documentStore.remove(docId))
+
+                var inverted = s.invertedIndex
+                for (token in tokens.distinct()) {
+                    val existing = inverted[token] ?: continue
+                    val updated = existing.remove(docId)
+                    inverted = if (updated.isEmpty()) {
+                        inverted.remove(token)
                     } else {
-                        state.embeddings.put(str, updated)
-                    },
-                    keys = state.keys.remove(key),
+                        inverted.put(token, updated)
+                    }
+                }
+
+                s.copy(
+                    invertedIndex = inverted,
+                    forwardIndex = s.forwardIndex.remove(docId),
+                    documentStore = s.documentStore.remove(docId),
                 )
             }
         }
@@ -389,7 +523,7 @@ class TypeaheadSearchEngine<T, K>(
      * ```
      */
     override val size: Int
-        get() = state.value.keys.size
+        get() = state.value.documentStore.size
 
     /**
      * Checks if an item with the same composite key is currently indexed in the engine.
@@ -407,7 +541,8 @@ class TypeaheadSearchEngine<T, K>(
      * @return `true` if an item with the same composite key exists in the index, `false` otherwise.
      */
     override operator fun contains(item: T): Boolean {
-        return (textSelector(item) + keySelector(item)) in state.value.keys
+        val docId = generateDocId(item)
+        return docId in state.value.documentStore
     }
 
     /**
@@ -425,7 +560,7 @@ class TypeaheadSearchEngine<T, K>(
      * @return A read-only list of all domain objects.
      */
     override fun getAllItems(): List<T> {
-        return state.value.embeddings.values.flatMap { it.keys }
+        return state.value.documentStore.values.toList()
     }
 
     /**
@@ -531,6 +666,27 @@ class TypeaheadSearchEngine<T, K>(
         return SparseVector(features = sortedKeys, weights = primitiveWeights)
     }
 
+    /**
+     * Generates a collision-safe String document ID for the given [item].
+     *
+     * Uses `\u0000` (null character) as separator to guarantee that
+     * `textSelector="AB", keySelector="C"` is never confused with
+     * `textSelector="A", keySelector="BC"`.
+     *
+     * The resulting String caches its hash after the first call, making
+     * all subsequent PersistentMap (HAMT) traversals O(1).
+     */
+    @PublishedApi
+    internal fun generateDocId(item: T): String =
+        "${textSelector(item)}\u0000${keySelector(item)}"
+
+    /**
+     * Splits the input text into lowercase word tokens, filtering out blanks.
+     */
+    private fun tokenize(text: String): List<String> {
+        return text.lowercase().split(TOKENIZE_REGEX).filter { it.isNotBlank() }
+    }
+
     companion object {
         internal const val TIER_NONE = -1
         internal const val TIER_PRIMARY = 0
@@ -544,13 +700,17 @@ class TypeaheadSearchEngine<T, K>(
         const val DEFAULT_MAX_NGRAM_SIZE = 4
         const val DEFAULT_ANCHOR_WEIGHT = 10.0f
         const val DEFAULT_LENGTH_WEIGHT = 8.0f
-        const val DEFAULT_GESTALT_WEIGHT = 15.0f
+        const val DEFAULT_GESTALT_WEIGHT = 8.0f
         const val DEFAULT_PREFIX_WEIGHT = 6.0f
         const val DEFAULT_FUZZY_WEIGHT = 5.0f
-        const val DEFAULT_SKIP_WEIGHT = 4.0f
-        const val DEFAULT_FLOATING_WEIGHT = 2.5f
+        const val DEFAULT_SKIP_WEIGHT = 2.0f
+        const val DEFAULT_FLOATING_WEIGHT = 1.0f
         const val DEFAULT_MAX_RESULTS = 5
         const val FIND_BATCH_SIZE = 512
+        const val TOP_K_VOCAB = 10
+        const val ADJACENCY_BONUS = 0.1f
+        const val ORDER_PENALTY = 0.05f
+        private val TOKENIZE_REGEX = Regex("\\W+")
 
         /**
          * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.
@@ -781,7 +941,7 @@ class TypeaheadSearchEngine<T, K>(
         ): TypeaheadSearchEngine<T, T> {
             return TypeaheadSearchEngine(
                 textSelector = textSelector,
-                metadata = TypeaheadMetadata(),
+                metadata = TypeaheadMetadata(), // Fixed shadowing here
                 defaultDispatcher = defaultDispatcher,
                 keySelector = { it }
             ).apply {
@@ -822,12 +982,20 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
     json: Json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
 ) {
     val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
+    val currentState = state.value
     val records: Sequence<TypeaheadRecord<T>> = sequence {
         yield(typeaheadMetadata)
-        state.value.embeddings.values
-            .asSequence()
-            .flatMap { it.entries }
-            .forEach { (item, vector) -> yield(TypeaheadPayload(item = item, vector = vector)) }
+        // Emit vocabulary entries (Flyweight cache)
+        currentState.vocabulary.forEach { (token, vector) ->
+            yield(TypeaheadVocabularyEntry(token = token, vector = vector))
+        }
+        // Emit item payloads with their token lists
+        currentState.forwardIndex.forEach { (docId, tokens) ->
+            val item = currentState.documentStore[docId]
+            if (item != null) {
+                yield(TypeaheadPayload(item = item, tokens = tokens))
+            }
+        }
     }
     sink.buffered().use { bufferedSink ->
         records.forEach { record ->
@@ -886,31 +1054,47 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
 
         if (clearExisting) state.value = TypeaheadSearchEngine.EngineState()
 
-        state.update { (_embeddings: PersistentMap<String, PersistentMap<T, SparseVector>>, _keys: PersistentSet<String>) ->
+        state.update { s ->
             var meta = typeaheadMetadata
-            var embeddings = _embeddings
-            var keys = _keys
-            sequence.forEach { item ->
-                when (item) {
+            var vocabulary = s.vocabulary
+            var invertedIndex = s.invertedIndex
+            var forwardIndex = s.forwardIndex
+            var documentStore = s.documentStore
+
+            sequence.forEach { record ->
+                when (record) {
                     is TypeaheadMetadata -> {
                         if (clearExisting) {
-                            meta = item
+                            meta = record
                         } else {
-                            check(item == meta) {
+                            check(record == meta) {
                                 """Imported metadata does not match engine metadata. To merge records, both must have identical weights and N-gram sizes to ensure consistent scoring. Use clearExisting = true to overwrite the current engine state with the imported one."""
                             }
                         }
                     }
 
+                    is TypeaheadVocabularyEntry -> {
+                        vocabulary = vocabulary.put(record.token, record.vector)
+                    }
+
                     is TypeaheadPayload -> {
-                        val existing = embeddings[textSelector(item.item)] ?: persistentHashMapOf()
-                        embeddings = embeddings.put(textSelector(item.item), existing.put(item.item, item.vector))
-                        keys = keys.add(textSelector(item.item) + keySelector(item.item))
+                        val item = record.item
+                        val tokens = record.tokens
+                        val docId = generateDocId(item)
+
+                        forwardIndex = forwardIndex.put(docId, tokens)
+                        documentStore = documentStore.put(docId, item)
+
+                        tokens.forEachIndexed { position, token ->
+                            val existing = invertedIndex[token] ?: persistentHashMapOf()
+                            val positions = existing[docId] ?: emptyList()
+                            invertedIndex = invertedIndex.put(token, existing.put(docId, positions + position))
+                        }
                     }
                 }
             }
             typeaheadMetadata = meta
-            TypeaheadSearchEngine.EngineState(embeddings, keys)
+            TypeaheadSearchEngine.EngineState(vocabulary, invertedIndex, forwardIndex, documentStore)
         }
     }
 }
