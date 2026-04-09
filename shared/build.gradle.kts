@@ -30,7 +30,7 @@ plugins {
 }
 
 group = "io.github.karloti"
-val projectVersion = "1.9.0"
+val projectVersion = "2.0.0"
 version = projectVersion
 
 kotlin {

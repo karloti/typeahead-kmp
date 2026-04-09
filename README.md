@@ -7,11 +7,12 @@ Multiplatform (KMP).
 
 Unlike standard search algorithms that fail during real-time typing, `typeahead-kmp` is built to understand the **"Blind
 Continuation" phenomenon**—where users make an early typo but intuitively continue typing the rest of the word
-correctly.
+correctly. It also supports **multi-word queries** across documents of any length—from short labels to large paragraphs—using a
+tokenized two-stage retrieval architecture with positional adjacency scoring.
 
-Powered by a custom **L2-Normalized Sparse Vector Space** algorithm and immutable state management, it acts as a highly
-optimized, local vector database. It provides `O(1)` lookup times while gracefully handling skipped characters, swapped
-letters, and phonetic typos, yielding a Cosine Similarity score between `0.0` and `1.0`.
+Powered by a custom **L2-Normalized Sparse Vector Space** algorithm, a **Flyweight Vocabulary Cache**, and immutable
+state management, it acts as a highly optimized, local vector database. It provides `O(1)` lookup times while gracefully
+handling skipped characters, swapped letters, and phonetic typos, yielding a Cosine Similarity score between `0.0` and `1.0`.
 
 ---
 
@@ -37,7 +38,7 @@ Add the dependency to your `build.gradle.kts` in the `commonMain` source set:
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.karloti:typeahead-kmp:1.9.0")  // Replace it with the latest version
+            implementation("io.github.karloti:typeahead-kmp:2.0.0")  // Replace it with the latest version
         }
     }
 }

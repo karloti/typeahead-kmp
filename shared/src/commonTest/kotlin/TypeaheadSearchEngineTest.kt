@@ -68,7 +68,7 @@ val countries = listOf(
 /**
  * Set to `true` for intensive local runs, `false` for lightweight CI (GitHub Actions).
  */
-const val LOCAL = true
+const val LOCAL = false
 
 class TypeaheadSearchEngineTest {
 
@@ -249,7 +249,9 @@ class TypeaheadSearchEngineTest {
             searchEngine.find(query)
             val (topMatch, score) = searchEngine.results.value.firstOrNull() ?: continue
 
-            val highlightedText = query.toHeatmap(topMatch).toHighlightedString(topMatch)
+            val highlightedText = query
+                .toHeatmap(topMatch)
+                .toHighlightedString()
 
             // Format score to 4 decimal places for clean UI alignment
             val formattedScore = score.toString().take(5)

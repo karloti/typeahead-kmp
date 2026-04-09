@@ -39,6 +39,7 @@ import kotlinx.serialization.json.io.decodeSourceToSequence
 import kotlinx.serialization.json.io.encodeToSink
 import kotlinx.serialization.serializer
 import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.min
 import kotlin.math.sqrt
 
@@ -97,7 +98,7 @@ class TypeaheadSearchEngine<T, K>(
     @PublishedApi
     internal data class EngineState<T>(
         val vocabulary: PersistentMap<String, SparseVector> = persistentHashMapOf(),
-        val invertedIndex: PersistentMap<String, PersistentMap<String, List<Int>>> = persistentHashMapOf(),
+        val invertedIndex: PersistentMap<String, PersistentMap<String, IntArray>> = persistentHashMapOf(),
         val forwardIndex: PersistentMap<String, List<String>> = persistentHashMapOf(),
         val documentStore: PersistentMap<String, T> = persistentHashMapOf(),
     )
@@ -141,19 +142,33 @@ class TypeaheadSearchEngine<T, K>(
                 if (exactVector != null) {
                     listOf(queryToken to (qVector dotProduct exactVector))
                 } else {
-                    currentState.vocabulary.entries
-                        .map { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
-                        .filter { it.second > EPSILON_FLOAT }
-                        .sortedByDescending { it.second }
-                        .take(TOP_K_VOCAB)
+                    val cpq = ConcurrentPriorityQueue(
+                        maxSize = typeaheadMetadata.topKVocab,
+                        dispatcher = defaultDispatcher,
+                        comparator = compareByDescending<Pair<String, Float>> { it.second }
+                            .thenBy { it.first },
+                        keySelector = { it: Pair<String, Float> -> it.first }
+                    )
+                    cpq.addAll(
+                        elements = currentState.vocabulary.entries.asSequence().asFlow(),
+                        transform = { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
+                    )
+                    cpq.items.value
                 }
             } else {
                 // Last token (possibly partial): fuzzy scan over vocabulary
-                currentState.vocabulary.entries
-                    .map { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
-                    .filter { it.second > EPSILON_FLOAT }
-                    .sortedByDescending { it.second }
-                    .take(TOP_K_VOCAB)
+                val cpq = ConcurrentPriorityQueue(
+                    maxSize = typeaheadMetadata.topKVocab,
+                    dispatcher = defaultDispatcher,
+                    comparator = compareByDescending<Pair<String, Float>> { it.second }
+                        .thenBy { it.first },
+                    keySelector = { it: Pair<String, Float> -> it.first }
+                )
+                cpq.addAll(
+                    elements = currentState.vocabulary.entries.asSequence().asFlow(),
+                    transform = { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
+                )
+                cpq.items.value
             }
         }
 
@@ -192,7 +207,7 @@ class TypeaheadSearchEngine<T, K>(
                 var lastMatchPosition = -1
 
                 for (queryToken in queryTokens) {
-                    // Забележка за оптимизация: qVector може да се изчисли веднъж извън ламбдата
+                    // Optimization note: qVector could be pre-computed once outside the lambda
                     val qVector = embedding(queryToken)
 
                     var bestScore = 0.0f
@@ -209,10 +224,10 @@ class TypeaheadSearchEngine<T, K>(
                         }
                     }
 
-                    // Smart Positional Encoding: Само позитивен бонус, без наказание за глобален ред
+                    // Smart Positional Encoding: positive bonus only, no penalty for global order
                     if (bestScore > 0f && lastMatchPosition != -1) {
                         if (bestPosition == lastMatchPosition + 1) {
-                            bestScore *= (1.0f + ADJACENCY_BONUS)
+                            bestScore *= (1.0f + typeaheadMetadata.adjacencyBonus)
                         }
                     }
 
@@ -223,10 +238,10 @@ class TypeaheadSearchEngine<T, K>(
                     totalScore += bestScore
                 }
 
-                // Универсална нормализация за дължина (BM25 Inspired)
+                // Universal length normalization (BM25-inspired)
                 val baseScore = totalScore / queryTokens.size
 
-                val logDocLength = kotlin.math.log10(docTokens.size.toFloat().coerceAtLeast(1f))
+                val logDocLength = log10(docTokens.size.toFloat().coerceAtLeast(1f))
                 val lengthPenaltyModifier = 1.0f - (0.1f * logDocLength)
 
                 val finalScore = baseScore * lengthPenaltyModifier.coerceAtLeast(0.5f)
@@ -239,12 +254,16 @@ class TypeaheadSearchEngine<T, K>(
     }
 
     /**
-     * Updates the active [query] and performs a cosine-similarity search against all
-     * indexed embeddings, storing the ranked matches in the [results] `StateFlow`.
+     * Updates the active [query] and performs a two-stage retrieval search, storing
+     * the ranked matches in the [results] `StateFlow`.
      *
-     * The query string is vectorized into a [SparseVector] and compared against all
-     * indexed embeddings via dot-product (equivalent to cosine similarity for L2-normalized
-     * vectors). A bounded priority queue retains only the top [TypeaheadMetadata.maxResults] matches.
+     * **Stage 1 (Vocabulary Scan):** Each query token is vectorized and matched against
+     * the shared vocabulary. Completed tokens use exact lookup with fuzzy fallback;
+     * the last (possibly partial) token always performs a fuzzy top-K scan.
+     *
+     * **Stage 2 (MaxSim Scoring):** Candidate documents gathered from the inverted index
+     * are scored using MaxSim with positional adjacency bonuses and BM25-inspired length
+     * normalization. A bounded priority queue retains only the top [TypeaheadMetadata.maxResults] matches.
      * Blank queries clear the result set immediately.
      *
      * Because the engine also observes [state] changes, the [results] flow
@@ -252,7 +271,7 @@ class TypeaheadSearchEngine<T, K>(
      * is active — no additional [find] call is needed.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java", "Koka"), textSelector = { it })
+     * val engine = TypeaheadSearchEngine(items = listOf("Kotlin", "Java", "Koka"))
      * val results: StateFlow<List<Pair<String, Float>>> = engine.find("Kot")
      * // results.value[0] == ("Kotlin" to 0.95f)  — highest cosine similarity
      * ```
@@ -276,7 +295,7 @@ class TypeaheadSearchEngine<T, K>(
     /**
      * Computes a character-level heatmap for the given [text] against the current [query].
      *
-     * Delegates to [String.toHeatmap] using the active query value. Returns `null` if
+     * Delegates to [toHeatmap] using the active query value. Returns `null` if
      * no query has been set yet.
      *
      * ```kotlin
@@ -347,7 +366,7 @@ class TypeaheadSearchEngine<T, K>(
                 var inverted = s.invertedIndex
                 tokens.forEachIndexed { position, token ->
                     val existing = inverted[token] ?: persistentHashMapOf()
-                    val positions = existing[docId] ?: emptyList()
+                    val positions = existing[docId] ?: IntArray(0)
                     inverted = inverted.put(token, existing.put(docId, positions + position))
                 }
 
@@ -454,14 +473,15 @@ class TypeaheadSearchEngine<T, K>(
     }
 
     /**
-     * Removes a specific element and its vector embedding from the search engine.
+     * Removes a specific element from the search engine.
      *
-     * Only the given [item] is removed from the inner map for its text key.
-     * If other items share the same text key, they are preserved. The outer
-     * text key entry is removed only when its inner map becomes empty.
+     * The item's document ID is computed via [generateDocId] and removed from the
+     * document store, forward index, and inverted index. Vocabulary tokens that are
+     * still referenced by other documents are preserved; inverted index entries are
+     * pruned only when no documents reference them.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"))
+     * val engine = TypeaheadSearchEngine(items = listOf("Kotlin", "Java"))
      * engine.remove("Kotlin")
      * "Kotlin" in engine // false
      * ```
@@ -502,7 +522,7 @@ class TypeaheadSearchEngine<T, K>(
      * After calling this method, [size] returns 0 and [getAllItems] returns an empty list.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Apple", "Banana"))
+     * val engine = TypeaheadSearchEngine(items = listOf("Apple", "Banana"))
      * engine.clear()
      * engine.size // 0
      * ```
@@ -518,7 +538,7 @@ class TypeaheadSearchEngine<T, K>(
      * the same text but with different keys are counted separately.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"), textSelector = { it })
+     * val engine = TypeaheadSearchEngine(items = listOf("Kotlin", "Java"))
      * engine.size // 2
      * ```
      */
@@ -532,7 +552,7 @@ class TypeaheadSearchEngine<T, K>(
      * and the key must match for this to return `true`. Supports the idiomatic `in` operator syntax.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin"), textSelector = { it })
+     * val engine = TypeaheadSearchEngine(items = listOf("Kotlin"))
      * "Kotlin" in engine  // true
      * "Java" in engine    // false
      * ```
@@ -553,7 +573,7 @@ class TypeaheadSearchEngine<T, K>(
      * are not reflected.
      *
      * ```kotlin
-     * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"), textSelector = { it })
+     * val engine = TypeaheadSearchEngine(items = listOf("Kotlin", "Java"))
      * engine.getAllItems() // ["Kotlin", "Java"]
      * ```
      *
@@ -707,9 +727,8 @@ class TypeaheadSearchEngine<T, K>(
         const val DEFAULT_FLOATING_WEIGHT = 1.0f
         const val DEFAULT_MAX_RESULTS = 5
         const val FIND_BATCH_SIZE = 512
-        const val TOP_K_VOCAB = 10
-        const val ADJACENCY_BONUS = 0.1f
-        const val ORDER_PENALTY = 0.05f
+        const val DEFAULT_TOP_K_VOCAB = 10
+        const val DEFAULT_ADJACENCY_BONUS = 0.1f
         private val TOKENIZE_REGEX = Regex("\\W+")
 
         /**
@@ -808,10 +827,10 @@ class TypeaheadSearchEngine<T, K>(
          * )
          * ```
          *
-         * @param items A flow of initial elements to populate the engine concurrently.
-         * @param defaultDispatcher The coroutine dispatcher for background tasks.
-         * @param metadata Configuration for weights, N-gram size, and result limits.
+         * @param items A [Flow] of initial elements to populate the engine concurrently.
          * @param textSelector Extracts searchable text from each element [T].
+         * @param metadata Configuration for weights, N-gram size, and result limits.
+         * @param defaultDispatcher The coroutine dispatcher for background tasks.
          * @param uniqueKeySelector Extracts a unique identity key from each element [T].
          */
         suspend operator fun <T, K> invoke(
@@ -862,8 +881,9 @@ class TypeaheadSearchEngine<T, K>(
          *
          * The engine's [TypeaheadMetadata] (weights, N-gram size, result limit) is read
          * from the stream's first element, so no separate metadata parameter is needed.
-         * All subsequent elements are [TypeaheadPayload] records loaded directly into the
-         * index without re-vectorization, making this ~50× faster than re-inserting items.
+         * The stream also contains [TypeaheadVocabularyEntry] records with pre-computed
+         * vectors and [TypeaheadPayload] records with token lists, loaded directly into the
+         * index without re-vectorization.
          *
          * ```kotlin
          * data class Product(val id: Int, val name: String)
@@ -886,7 +906,7 @@ class TypeaheadSearchEngine<T, K>(
          * @param keySelector Extracts a unique identity key from each element [T].
          * @param defaultDispatcher The coroutine dispatcher used for search computations.
          * @param json The [Json] instance used for deserialization.
-         * @return A fully restored [TypeaheadSearchEngine] with [typeaheadMetadata] set from the stream.
+         * @return A fully restored [TypeaheadSearchEngine] with [metadata] set from the stream.
          */
         inline operator fun <reified T, reified K> invoke(
             source: Source,
@@ -930,7 +950,7 @@ class TypeaheadSearchEngine<T, K>(
          * @param textSelector Extracts searchable text from each element [T]. Defaults to [toString].
          * @param defaultDispatcher The coroutine dispatcher used for search computations.
          * @param json The [Json] instance used for deserialization.
-         * @return A fully restored [TypeaheadSearchEngine] with [typeaheadMetadata] set from the stream.
+         * @return A fully restored [TypeaheadSearchEngine] with [metadata] set from the stream.
          */
         inline operator fun <reified T> invoke(
             source: Source,
@@ -941,7 +961,7 @@ class TypeaheadSearchEngine<T, K>(
         ): TypeaheadSearchEngine<T, T> {
             return TypeaheadSearchEngine(
                 textSelector = textSelector,
-                metadata = TypeaheadMetadata(), // Fixed shadowing here
+                metadata = TypeaheadMetadata(),
                 defaultDispatcher = defaultDispatcher,
                 keySelector = { it }
             ).apply {
@@ -960,13 +980,14 @@ class TypeaheadSearchEngine<T, K>(
  * Exports the current engine state as newline-delimited JSON (JSONL) to the given [Sink].
  *
  * Each line is a standalone [TypeaheadRecord]: the first line is a [TypeaheadMetadata]
- * header and all subsequent lines are [TypeaheadPayload] records. The streaming approach
+ * header, followed by [TypeaheadVocabularyEntry] records with pre-computed vectors,
+ * and then [TypeaheadPayload] records with token lists. The streaming approach
  * ensures constant memory usage regardless of the dataset size.
  *
  * The exported data can be restored via [importFromSource].
  *
  * ```kotlin
- * val engine = TypeaheadSearchEngine(listOf("Kotlin", "Java"), textSelector = { it })
+ * val engine = TypeaheadSearchEngine(items = listOf("Kotlin", "Java"))
  * fileSystem.sink(path).use { sink ->
  *     engine.exportToSink(sink, serializer<String>())
  * }
@@ -1009,12 +1030,13 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
  * Restores the engine state by streaming records from a [Source], bypassing vectorization.
  *
  * Deserializes a JSONL (or JSON-array) stream previously produced by [exportToSink].
- * The first record is expected to be a [TypeaheadMetadata] header; all subsequent records
- * are [TypeaheadPayload] entries whose pre-computed vectors are loaded directly into the index.
+ * The stream contains three record types: a [TypeaheadMetadata] header,
+ * [TypeaheadVocabularyEntry] records with pre-computed vectors, and [TypeaheadPayload]
+ * entries with token lists. This bypasses re-vectorization entirely.
  * The format is auto-detected via [DecodeSequenceMode.AUTO_DETECT].
  *
  * **Metadata handling:**
- * - `clearExisting = true` (default): [typeaheadMetadata] is replaced by the value read from the
+ * - `clearExisting = true` (default): [metadata] is replaced by the value read from the
  *   stream, so the engine's configuration is always consistent with its indexed vectors.
  * - `clearExisting = false`: the imported metadata must exactly match the engine's current
  *   metadata; merging vectors produced with different weights or N-gram sizes would
@@ -1033,7 +1055,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
  *
  * @param source The [Source] to read the JSONL stream from.
  * @param itemSerializer The [KSerializer] for item deserialization.
- * @param clearExisting If `true`, replaces the current index and [typeaheadMetadata]; if `false`, merges records.
+ * @param clearExisting If `true`, replaces the current index and [metadata]; if `false`, merges records.
  * @param json The [Json] instance used for deserialization.
  * @throws IllegalStateException if [clearExisting] is `false` and the imported
  *         metadata differs from the engine's current metadata.
@@ -1087,7 +1109,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
 
                         tokens.forEachIndexed { position, token ->
                             val existing = invertedIndex[token] ?: persistentHashMapOf()
-                            val positions = existing[docId] ?: emptyList()
+                            val positions = existing[docId] ?: IntArray(0)
                             invertedIndex = invertedIndex.put(token, existing.put(docId, positions + position))
                         }
                     }

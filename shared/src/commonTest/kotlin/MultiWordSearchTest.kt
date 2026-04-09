@@ -116,17 +116,17 @@ class MultiWordSearchTest {
         assertNotNull(newPositions, "Inverted index should contain positions for 'new'.")
         assertEquals(
             listOf(0, 2),
-            newPositions,
+            newPositions.toList(),
             "Token 'new' appears at positions 0 and 2."
         )
 
         val yorkPositions = inverted["york"]?.get(docId)
         assertNotNull(yorkPositions, "Inverted index should contain positions for 'york'.")
-        assertEquals(listOf(1), yorkPositions, "Token 'york' appears at position 1.")
+        assertEquals(listOf(1), yorkPositions.toList(), "Token 'york' appears at position 1.")
 
         val jerseyPositions = inverted["jersey"]?.get(docId)
         assertNotNull(jerseyPositions, "Inverted index should contain positions for 'jersey'.")
-        assertEquals(listOf(3), jerseyPositions, "Token 'jersey' appears at position 3.")
+        assertEquals(listOf(3), jerseyPositions.toList(), "Token 'jersey' appears at position 3.")
     }
 
     /**

@@ -27,8 +27,8 @@ sealed interface TypeaheadRecord<out T> {
      * This Data Transfer Object (DTO) bridges the internal vector space with external storage.
      *
      * @param T The type of the user-defined element.
-     * @param item The original element stored in the engine.
-     * @param tokens The ordered list of tokens extracted from the item's text representation.
+     * @property item The original element stored in the engine.
+     * @property tokens The ordered list of tokens extracted from the item's text representation.
      */
     @Serializable
     @SerialName("payload")
@@ -58,12 +58,14 @@ sealed interface TypeaheadRecord<out T> {
      * @property maxNgramSize The maximum size of N-grams to extract for floating positional matching. Defaults to 4.
      * @property anchorWeight The weight applied to the first character match (P0 Anchor). Defaults to 10.0.
      * @property lengthWeight The weight applied to the exact length bucket match. Defaults to 8.0.
-     * @property gestaltWeight The weight for the Typoglycemia Gestalt anchor (matching first, last, and length). Defaults to 15.0.
+     * @property gestaltWeight The weight for the Typoglycemia Gestalt anchor (matching first, last, and length). Defaults to 8.0.
      * @property prefixWeight The weight for strict prefix matching. Defaults to 6.0.
      * @property fuzzyWeight The weight for fuzzy prefix matching (transposition tolerant). Defaults to 5.0.
-     * @property skipWeight The weight for skip-gram matching (insertion/deletion tolerant). Defaults to 4.0.
-     * @property floatingWeight The weight for floating N-gram matching. Defaults to 2.5.
+     * @property skipWeight The weight for skip-gram matching (insertion/deletion tolerant). Defaults to 2.0.
+     * @property floatingWeight The weight for floating N-gram matching. Defaults to 1.0.
      * @property maxResults The maximum number of results to return from a search query. Defaults to 5.
+     * @property topKVocab The number of top vocabulary matches to consider per query token during the fuzzy vocabulary scan. Defaults to 10.
+     * @property adjacencyBonus The multiplicative bonus applied when consecutive query tokens match adjacent positions in a document. Defaults to 0.1.
      */
     @Serializable
     @SerialName("metadata")
@@ -78,6 +80,9 @@ sealed interface TypeaheadRecord<out T> {
         val skipWeight: Float = TypeaheadSearchEngine.DEFAULT_SKIP_WEIGHT,
         val floatingWeight: Float = TypeaheadSearchEngine.DEFAULT_FLOATING_WEIGHT,
         val maxResults: Int = TypeaheadSearchEngine.DEFAULT_MAX_RESULTS,
+        val topKVocab: Int = TypeaheadSearchEngine.DEFAULT_TOP_K_VOCAB,
+        val adjacencyBonus: Float = TypeaheadSearchEngine.DEFAULT_ADJACENCY_BONUS,
+
     ): TypeaheadRecord<Nothing>
 
 }
