@@ -7,21 +7,27 @@ Multiplatform (KMP).
 
 Unlike standard search algorithms that fail during real-time typing, `typeahead-kmp` is built to understand the **"Blind
 Continuation" phenomenon**—where users make an early typo but intuitively continue typing the rest of the word
-correctly. It also supports **multi-word queries** across documents of any length—from short labels to large paragraphs—using a
-tokenized two-stage retrieval architecture with positional adjacency scoring.
+correctly. It also supports **multi-word queries** across documents of any length—from short labels to long
+descriptions—using a tokenized two-stage retrieval architecture with **MaxSim scoring**, **Smart Positional Encoding**
+for adjacency bonuses, and **BM25-inspired length normalization**.
 
-Powered by a custom **L2-Normalized Sparse Vector Space** algorithm, a **Flyweight Vocabulary Cache**, and immutable
-state management, it acts as a highly optimized, local vector database. It provides `O(1)` lookup times while gracefully
-handling skipped characters, swapped letters, and phonetic typos, yielding a Cosine Similarity score between `0.0` and `1.0`.
+Powered by a custom **L2-Normalized Sparse Vector Space** algorithm, a **Flyweight Vocabulary Cache**, an **Inverted
+Index**, and immutable state management, it acts as a highly optimized, local vector database. Each query token is
+independently matched against the vocabulary and scored against every document token, so searching for `"dark knight"`
+across thousands of movie descriptions works just as naturally as searching for a single word like `"batman"`. The engine
+yields a Cosine Similarity score between `0.0` and `1.0` while gracefully handling skipped characters, swapped letters,
+and phonetic typos.
 
 ---
 
 ## Features
 
+*   **Multi-Word Fuzzy Search:** Query with one word or many—each token is independently vectorized and matched using
+    MaxSim scoring with adjacency bonuses for consecutive matches.
 *   **Zero Network Latency:** Runs entirely on the Edge (the user's device memory), making it perfect for instant UI
     feedback.
 *   **Typo & Transposition Tolerant:** N-gram and positional embedding techniques catch mistakes that break standard
-    prefix searches.
+    prefix searches—even across multiple query words simultaneously.
 *   **100% Thread-Safe & Lock-Free:** Built on `MutableStateFlow` and `PersistentMap` (HAMT), allowing thousands of
     concurrent reads and writes without blocking threads.
 *   **Cold-Start Elimination:** Blazing-fast export and import of pre-computed vector states via streaming JSON
@@ -38,7 +44,7 @@ Add the dependency to your `build.gradle.kts` in the `commonMain` source set:
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.karloti:typeahead-kmp:2.0.0")  // Replace it with the latest version
+            implementation("io.github.karloti:typeahead-kmp:2.0.1")  // Replace with the latest version
         }
     }
 }
@@ -123,6 +129,77 @@ runBlocking {
 }
 ```
 
+### 3. Multi-Word Search Across Long Descriptions
+
+The engine is not limited to single-word lookups. You can search with multiple words—even misspelled ones—across
+documents of any length. Each query token is independently vectorized and scored against every token in the document
+using **MaxSim** (Maximum Similarity). When consecutive query tokens match adjacent positions in the document, a
+**Smart Positional Encoding** adjacency bonus amplifies the score. **BM25-inspired length normalization** prevents
+long documents from unfairly dominating short ones.
+
+```kotlin
+import io.github.karloti.typeahead.TypeaheadSearchEngine
+
+data class Movie(val id: Int, val title: String, val description: String)
+
+val engine = TypeaheadSearchEngine<Movie, Int>(
+    textSelector = { "${it.title} ${it.description}" },
+    keySelector = { it.id }
+)
+
+engine.addAll(listOf(
+    Movie(
+        id = 1, 
+        title = "The Dark Knight",
+        description = "Batman raises the stakes in his war on crime in Gotham City with the help of allies Lt. Jim Gordon and DA Harvey Dent"
+    ),
+    Movie(
+        id = 2, 
+        title = "Interstellar",
+        description = "A team of explorers travel through a wormhole in space in an attempt to ensure humanity's survival"),
+    Movie(
+        id = 3, 
+        title = "The Dark Tower",
+        description = "A gunslinger in a dark fantasy world pursues the Man in Black across a vast desert toward a mysterious tower"),
+    Movie(
+        id = 4, 
+        title = "Inception",
+        description = "A thief who steals corporate secrets through dream-sharing technology is given the inverse task of planting an idea"),
+    Movie(
+        id = 5, 
+        title = "The Shawshank Redemption",
+        description = "A banker convicted of uxoricide forms a friendship over a quarter century with a hardened convict in a dark prison"),
+))
+
+// --- Single-word query ---
+val results1 = engine.find("batman").value
+// → #1: The Dark Knight (exact token match)
+
+// --- Multi-word query ---
+val results2 = engine.find("dark knight gotham").value
+// → #1: The Dark Knight (all 3 words match adjacent positions → adjacency bonus)
+// → #2: The Dark Tower  (shares "dark" but not "knight" or "gotham")
+
+// --- Multi-word query with typos ---
+val results3 = engine.find("drk kngiht gotam").value
+// → #1: The Dark Knight (fuzzy matching recovers all 3 misspelled words)
+
+// --- Partial recall from a long description ---
+val results4 = engine.find("wormhole humanity survival").value
+// → #1: Interstellar (all query words appear in the description)
+```
+
+**How multi-word scoring works:**
+
+1. The query `"dark knight gotham"` is tokenized into `["dark", "knight", "gotham"]`.
+2. Each query token is vectorized and matched against the vocabulary via the **inverted index** to gather candidate
+   documents.
+3. For each candidate, every query token finds its **best-matching document token** (MaxSim).
+4. When `"dark"` matches position 1 and `"knight"` matches position 2 (adjacent), the adjacency bonus fires.
+5. The total score is normalized by query length and document length (BM25-inspired) to produce a fair ranking.
+
+### 4. Searching with Highlights
+
 The `heatmap()` method uses the engine's stored query to compute a per-character match tier for any
 candidate string. Each character is paired with one of four tiers:
 
@@ -139,7 +216,7 @@ or map the tiers to your own UI styling (e.g., Jetpack Compose `AnnotatedString`
 **Visualizing the Heatmap**: The heatmap pairs each character with a visual tier (exact match, N-gram block, skip-gram,
 or unmatched), allowing you to build beautiful, intuitive UI highlights like the one below:
 
-### 3. Exporting & Importing State (Eliminating Cold Starts)
+### 5. Exporting & Importing State (Eliminating Cold Starts)
 
 Avoid recalculating vectors on the client device by pre-computing them on your backend or during the build process, then
 shipping a static JSONL file. The engine supports streaming export and import using `kotlinx.io` and `kotlinx.serialization`.
@@ -216,7 +293,7 @@ println("Existing engine imported from source. Size: ${existingEngine.size}")
 To truly understand the power of `typeahead-kmp`, let's look at a real-time keystroke simulation.
 Imagine a user is trying to type **"Canada"**, but they accidentally type **"Cnada"** (a classic transposition error).
 
-Here is how the engine's internal mathematical weighting dynamically reacts at each keystroke in `O(1)` time:
+Here is how the engine's internal mathematical weighting dynamically reacts at each keystroke:
 
 ### Step 1: Initial Input (L2 Normalization & Short-Word Bias)
 
@@ -288,13 +365,54 @@ overcomes the length penalty. `Canada` firmly reclaims the #1 spot!
 ```
 
 **This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence
-momentum—all happening in `O(1)` time without memory allocations—is what makes `typeahead-kmp` uniquely powerful for
+momentum—all happening without memory allocations—is what makes `typeahead-kmp` uniquely powerful for
 human-driven inputs.**
 
 ![Real-World Typing Simulation: The "Cnada" Problem](assets/cnada-problem.gif)
 
 _This dynamic, keystroke-by-keystroke shifting between prefix-matching, gestalt spellchecking, and sequence momentum—all
 happening without memory allocations—is what makes this engine uniquely powerful._
+
+## Multi-Word Search: The "hariy pota gobelt" Problem
+
+Real users don't just search for single words. When looking for a movie, a product, or a record in a large dataset,
+they often type fragments of multiple words—frequently with typos. `typeahead-kmp` handles this natively.
+
+### Scenario: Searching a Movie Database
+
+Imagine you have indexed thousands of movies with their full descriptions. A user wants to find
+*"Harry Potter and the Goblet of Fire"* but types: **`hariy pota gobelt`**
+
+```lua
+=== Results for sloppy query: [hariy pota gobelt] ===
+1. Score: 0.108 | Harry Potter and the Goblet of Fire is a brilliant fantasy movie released in 2005.
+2. Score: 0.074 | Harry Potter and the Chamber of Secrets is also a great fantasy movie about wizards.
+3. Score: 0.038 | A completely unrelated movie where a magical goblet was found in the fire.
+```
+
+**Why it works:**
+- `hariy` fuzzy-matches `harry` (transposed `r`/`i`) via shared n-grams and skip-grams
+- `pota` fuzzy-matches `potter` (truncated suffix) via fuzzy prefix anchoring
+- `gobelt` fuzzy-matches `goblet` (transposed `e`/`l`) via n-gram overlap
+- The first result wins because all three query tokens match **adjacent positions** in the document,
+  triggering the Smart Positional Encoding adjacency bonus
+- The second result still scores well (shares `harry` and `potter`) but lacks `goblet`
+- The third result has `goblet` and `fire` but not `harry` or `potter`, so it ranks last
+
+### Scenario: Three Words, All Misspelled
+
+Even when **every word** in the query contains errors, the engine recovers:
+
+```
+Query: "fsat brwon fxo" (intended: "fast brown fox")
+
+1. Score: 0.149 | The really fast brown fox jumps over the lazy dog...  ← Adjacency bonus fires!
+2. Score: 0.133 | The fox is very fast but the brown bear is slow...    ← All words present, scattered
+3. Score: 0.098 | The fast rabbit jumps over the deep brown forest...   ← Missing "fox"
+```
+
+The adjacency bonus gives the first document a measurable lead because `fast`, `brown`, and `fox` appear
+consecutively—even though the query tokens were all misspelled.
 
 ## Beyond UI: CLI Fuzzy File Finder
 
@@ -370,6 +488,8 @@ fragmentation, Garbage Collection pauses) or human behavior.
     intermediate `String` objects or `Set` collections. On mobile (JVM/ART or Kotlin Native), this triggers aggressive
     Garbage Collection (GC) pauses, leading to UI jitter. Additionally, standard sets treat words as bags-of-tokens,
     completely losing the critical "Prefix Anchor" (the fact that the beginning of a word matters more than the end).
+    They also lack native multi-word support—a query like `"dark knight gotham"` must be manually split and scored
+    word-by-word with no positional awareness of how query words relate to each other within the document.
 
 -   **Ratcliff-Obershelp & SIFT4**: While experimental algorithms like SIFT4 simulate human perception and operate in
     linear time (`O(max(N,M))`), they lack the structural optimizations required for concurrent environments. They don't
@@ -391,33 +511,40 @@ Instead, it functions as a highly specialized, local vector database:
 1.  **Zero-Allocation Math**: We use an **L2-Normalized Sparse Vector Space**. Vectors are represented by parallel,
     primitive `FloatArray` structures, strictly halving memory footprints and completely eliminating object fragmentation
     and GC pauses.
-2.  **`O(K)` Search Complexity**: Because vectors are pre-computed and alphabetically sorted, the core search reduces to
-    an ultra-fast, two-pointer dot-product intersection.
-3.  **Lock-Free Concurrency**: Utilizing immutable state (`PersistentMap`) and atomic Compare-And-Swap (CAS) operations
+2.  **Two-Stage Retrieval**: Stage 1 uses a **Flyweight Vocabulary Cache** and **Inverted Index** for `O(1)` candidate
+    retrieval per vocabulary term—only relevant documents are scored, not the entire dataset. Stage 2 applies **MaxSim
+    scoring** with Smart Positional Encoding and BM25-inspired length normalization.
+3.  **Native Multi-Word Support**: Each query token is independently vectorized and matched. Consecutive token matches
+    in the document receive an adjacency bonus, so `"dark knight"` naturally scores higher against a document containing
+    `"...the dark knight rises..."` than one with `"dark"` and `"knight"` scattered far apart.
+4.  **Lock-Free Concurrency**: Utilizing immutable state (`PersistentMap`) and atomic Compare-And-Swap (CAS) operations
     via a custom `ConcurrentPriorityQueue`, the engine handles thousands of parallel reads and writes without ever
     locking a thread.
-4.  **Human-Centric Scoring**: By combining positional weighting (P0 Anchors) with N-gram tokenization, the engine
-    seamlessly handles typos, transpositions, and the "Blind Continuation" effect, dynamically yielding a precise Cosine
-    Similarity score (`0.0` to `1.0`) in milliseconds.
+5.  **Human-Centric Scoring**: By combining positional weighting (P0 Anchors) with N-gram tokenization, the engine
+    seamlessly handles typos, transpositions, and the "Blind Continuation" effect across every word in the query,
+    dynamically yielding a precise Cosine Similarity score (`0.0` to `1.0`) in milliseconds.
 
 ## Algorithm Comparison
 
-| Algorithm                            | Typo Tolerance  | Prefix Anchor   | Memory Cost        | Blind Continuation | Search Complexity   |
-|:-------------------------------------|:----------------|:----------------|:-------------------|:-------------------|:--------------------|
-| **Strict Prefix Tries**              | ❌ None          | ✅ Perfect       | ✅ Low              | ❌ Fails            | `O(L)`              |
-| **Levenshtein Distance**             | ✅ Good          | ❌ Poor          | ✅ Low              | ❌ Poor             | `O(N*M)`            |
-| **Weighted & Damerau-Levenshtein**   | ✅ Excellent     | ❌ Poor          | ⚠️ Medium          | ❌ Poor             | `O(N*M)`            |
-| **Jaro-Winkler**                     | ✅ Good          | ✅ Excellent     | ✅ Low              | ❌ Poor             | `O(N*M)`            |
-| **Longest Common Subsequence (LCS)** | ✅ Good          | ⚠️ Moderate     | ⚠️ Medium          | ⚠️ Moderate        | `O(N*M)`            |
-| **Standard N-Grams & Q-Grams**       | ✅ Good          | ❌ Poor          | ⚠️ High            | ✅ Good             | `O(N+M)`            |
-| **Cosine / Jaccard / Dice (Sets)**   | ✅ Good          | ❌ Poor          | ⚠️ High            | ✅ Good             | `O(N+M)`            |
-| **Ratcliff-Obershelp**               | ⚠️ Moderate     | ❌ Poor          | ⚠️ Medium          | ⚠️ Moderate        | `O(N³)` ~ `O(N*M)`  |
-| **SIFT4 (Experimental)**             | ✅ Excellent     | ⚠️ Moderate     | ✅ Low              | ✅ Good             | `O(max(N,M))`       |
-| **Dense Vector DBs**                 | ✅ Excellent     | ❌ Poor          | ❌ Massive          | ✅ Excellent        | `O(log N)`          |
-| **Typeahead KMP (Ours)**             | **✅ Excellent** | **✅ Excellent** | **✅ Low (Sparse)** | **✅ Excellent**    | **`O(K)` ~ `O(1)`** |
+| Algorithm                            | Typo Tolerance  | Prefix Anchor   | Multi-Word       | Memory Cost        | Blind Continuation | Search Complexity      |
+|:-------------------------------------|:----------------|:----------------|:-----------------|:-------------------|:-------------------|:-----------------------|
+| **Strict Prefix Tries**              | ❌ None          | ✅ Perfect       | ❌ None           | ✅ Low              | ❌ Fails            | `O(L)`                 |
+| **Levenshtein Distance**             | ✅ Good          | ❌ Poor          | ❌ None           | ✅ Low              | ❌ Poor             | `O(N·M)` per pair      |
+| **Weighted & Damerau-Levenshtein**   | ✅ Excellent     | ❌ Poor          | ❌ None           | ⚠️ Medium          | ❌ Poor             | `O(N·M)` per pair      |
+| **Jaro-Winkler**                     | ✅ Good          | ✅ Excellent     | ❌ None           | ✅ Low              | ❌ Poor             | `O(N·M)` per pair      |
+| **Longest Common Subsequence (LCS)** | ✅ Good          | ⚠️ Moderate     | ❌ None           | ⚠️ Medium          | ⚠️ Moderate        | `O(N·M)` per pair      |
+| **Standard N-Grams & Q-Grams**       | ✅ Good          | ❌ Poor          | ⚠️ Manual        | ⚠️ High            | ✅ Good             | `O(N+M)` per pair      |
+| **Cosine / Jaccard / Dice (Sets)**   | ✅ Good          | ❌ Poor          | ⚠️ Manual        | ⚠️ High            | ✅ Good             | `O(N+M)` per pair      |
+| **Ratcliff-Obershelp**               | ⚠️ Moderate     | ❌ Poor          | ❌ None           | ⚠️ Medium          | ⚠️ Moderate        | `O(N³)` worst case     |
+| **SIFT4 (Experimental)**             | ✅ Excellent     | ⚠️ Moderate     | ❌ None           | ✅ Low              | ✅ Good             | `O(max(N,M))` per pair |
+| **Dense Vector DBs**                 | ✅ Excellent     | ❌ Poor          | ✅ Native         | ❌ Massive          | ✅ Excellent        | `O(D·N)` or `O(D·log N)` with ANN |
+| **Typeahead KMP (Ours)**             | **✅ Excellent** | **✅ Excellent** | **✅ Native**     | **✅ Low (Sparse)** | **✅ Excellent**    | **`O(Q·K·D_t)`**      |
 
-_(Note: K represents the number of non-zero overlapping features, which is strictly bounded by the string length,
-rendering the search time effectively O(1) relative to the total dataset size)._
+**Complexity legend for Typeahead KMP:**
+- `Q` = number of query tokens (words in the search phrase)
+- `K` = number of non-zero overlapping features per token pair (bounded by n-gram size, typically ≤ 30)
+- `D_t` = number of tokens in the candidate document
+- Candidate retrieval uses the **inverted index** (`O(1)` per vocabulary term), so only relevant documents are scored—not the entire dataset. For typical typeahead workloads (short queries, bounded result sets), search time is effectively **constant relative to total dataset size**.
 
 ---
 
@@ -427,6 +554,8 @@ The engine is engineered for environments with strict memory and CPU constraints
 
 -   **Memory Efficiency**: Uses primitive parallel arrays (`FloatArray` and `IntArray`) internally instead of object
     wrappers, cutting memory footprint by more than 50%.
+-   **Inverted Index**: Token-level inverted index enables sub-linear candidate retrieval—only documents containing at
+    least one matching vocabulary term are scored, avoiding a full scan of the dataset.
 -   **Top-K Retrieval**: Built on top of a custom `ConcurrentPriorityQueue` that discards low-priority matches
     instantly without allocation.
 -   **Concurrency**: Uses a Compare-And-Swap (CAS) approach via `MutableStateFlow` and Kotlin's `PersistentMap`. This
