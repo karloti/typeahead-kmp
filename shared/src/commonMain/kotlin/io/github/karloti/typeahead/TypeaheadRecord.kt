@@ -66,6 +66,7 @@ sealed interface TypeaheadRecord<out T> {
      * @property maxResults The maximum number of results to return from a search query. Defaults to 5.
      * @property topKVocab The number of top vocabulary matches to consider per query token during the fuzzy vocabulary scan. Defaults to 10.
      * @property adjacencyBonus The multiplicative bonus applied when consecutive query tokens match adjacent positions in a document. Defaults to 0.1.
+     * @property tokenizeRegexString The regular expression string used to split input text into tokens.
      */
     @Serializable
     @SerialName("metadata")
@@ -82,7 +83,7 @@ sealed interface TypeaheadRecord<out T> {
         val maxResults: Int = TypeaheadSearchEngine.DEFAULT_MAX_RESULTS,
         val topKVocab: Int = TypeaheadSearchEngine.DEFAULT_TOP_K_VOCAB,
         val adjacencyBonus: Float = TypeaheadSearchEngine.DEFAULT_ADJACENCY_BONUS,
-
+        val tokenizeRegexString: String = TypeaheadSearchEngine.DEFAULT_TOKENIZE_REGEX_STRING
     ): TypeaheadRecord<Nothing>
 
 }

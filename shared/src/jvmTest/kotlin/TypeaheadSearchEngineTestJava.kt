@@ -172,7 +172,10 @@ class TypeaheadSearchEngineTestJava {
             "Results count should match before and after import."
         )
 
-        resultsBeforeExport.zip(resultsAfterImport).forEachIndexed { index, (before, after) ->
+        val sortedBefore = resultsBeforeExport.sortedWith(compareByDescending<Pair<Product, Float>> { it.second }.thenBy { it.first.id })
+        val sortedAfter = resultsAfterImport.sortedWith(compareByDescending<Pair<Product, Float>> { it.second }.thenBy { it.first.id })
+
+        sortedBefore.zip(sortedAfter).forEachIndexed { index, (before, after) ->
             assertEquals(
                 before.second,
                 after.second,

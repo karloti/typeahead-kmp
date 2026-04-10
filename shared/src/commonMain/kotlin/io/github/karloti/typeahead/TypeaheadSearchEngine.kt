@@ -126,74 +126,75 @@ class TypeaheadSearchEngine<T, K>(
 
     private suspend fun performSearch(query: String): List<Pair<T, Float>> = withContext(defaultDispatcher) {
         val currentState = state.value
+
         val queryTokens = tokenize(query)
-        if (queryTokens.isEmpty()) return@withContext emptyList()
+        val candidateDocIds = queryTokens
+            .asFlow()
+            .map { queryToken -> queryToken to currentState.vocabulary[queryToken] }
+            .map { (queryToken, qVector) ->
+                when {
+                    qVector == null -> {
+                        val qVector = embedding(queryToken)
+                        val cpq = ConcurrentPriorityQueue(
+                            maxSize = typeaheadMetadata.topKVocab,
+                            dispatcher = defaultDispatcher,
+                            comparator = compareByDescending(Pair<String, Float>::second),
+                            keySelector = Pair<String, Float>::first
+                        )
+                        cpq.addAll(
+                            elements = currentState.vocabulary.entries.asSequence().asFlow(),
+                            transform = { (vocabWord, vocabVector) ->
+                                vocabWord to (qVector dotProduct vocabVector)
+                            }
+                        )
+                        cpq.items.value.map { it.first }.toSet()
+                    }
 
-        // Stage 1: For each query token, compute vector and find candidate vocabulary words
-        val queryVectors = queryTokens.map { embedding(it) }
-
-        val candidatesByQueryToken: List<List<Pair<String, Float>>> = queryTokens.mapIndexed { idx, queryToken ->
-            val qVector = queryVectors[idx]
-            val isLastToken = (idx == queryTokens.lastIndex)
-
-            if (!isLastToken) {
-                // Completed word: try exact lookup, fall back to fuzzy
-                val exactVector = currentState.vocabulary[queryToken]
-                if (exactVector != null) {
-                    listOf(queryToken to (qVector dotProduct exactVector))
-                } else {
-                    val cpq = ConcurrentPriorityQueue(
-                        maxSize = typeaheadMetadata.topKVocab,
-                        dispatcher = defaultDispatcher,
-                        comparator = compareByDescending<Pair<String, Float>> { it.second }
-                            .thenBy { it.first },
-                        keySelector = { it: Pair<String, Float> -> it.first }
-                    )
-                    cpq.addAll(
-                        elements = currentState.vocabulary.entries.asSequence().asFlow(),
-                        transform = { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
-                    )
-                    cpq.items.value
+                    else -> {
+                        setOf(queryToken)
+                    }
                 }
-            } else {
-                // Last token (possibly partial): fuzzy scan over vocabulary
-                val cpq = ConcurrentPriorityQueue(
-                    maxSize = typeaheadMetadata.topKVocab,
-                    dispatcher = defaultDispatcher,
-                    comparator = compareByDescending<Pair<String, Float>> { it.second }
-                        .thenBy { it.first },
-                    keySelector = { it: Pair<String, Float> -> it.first }
-                )
-                cpq.addAll(
-                    elements = currentState.vocabulary.entries.asSequence().asFlow(),
-                    transform = { (vocabWord, vocabVector) -> vocabWord to (qVector dotProduct vocabVector) }
-                )
-                cpq.items.value
             }
-        }
+            .flatMapMerge { it.asFlow() }
+            .flatMapMerge { vocabWord -> currentState.invertedIndex[vocabWord]?.keys?.asFlow() ?: emptyFlow() }
+            .toSet()
+            .toMutableSet()
+            .takeIf { it.isNotEmpty() } ?: return@withContext emptyList()
 
-        // Stage 2: Gather candidate docIds from inverted index
-        val candidateDocIds = mutableSetOf<String>()
-        for (tokenCandidates in candidatesByQueryToken) {
-            for ((vocabWord, _) in tokenCandidates) {
-                currentState.invertedIndex[vocabWord]?.keys?.let { candidateDocIds.addAll(it) }
-            }
-        }
-
-        // Fallback: if candidate set is smaller than maxResults, broaden to all items
-        // to ensure we fill result slots (mirrors the old exhaustive-scan behavior)
         if (candidateDocIds.size < typeaheadMetadata.maxResults) {
-            currentState.documentStore.keys.forEach { candidateDocIds.add(it) }
+            val needed = typeaheadMetadata.maxResults - candidateDocIds.size
+
+            // Stage 1: Expand via invertedIndex — find documents sharing tokens with existing candidates
+            val candidateTokens = candidateDocIds.flatMap { docId ->
+                currentState.forwardIndex[docId] ?: emptyList()
+            }.toSet()
+            val relatedDocScores = mutableMapOf<String, Int>()
+            for (token in candidateTokens) {
+                currentState.invertedIndex[token]?.keys?.forEach { docId ->
+                    if (docId !in candidateDocIds) {
+                        relatedDocScores[docId] = (relatedDocScores[docId] ?: 0) + 1
+                    }
+                }
+            }
+            relatedDocScores.entries
+                .sortedByDescending { it.value }
+                .take(needed)
+                .forEach { candidateDocIds.add(it.key) }
+
+            // Stage 2: If still not enough, fill remaining slots from documentStore
+            if (candidateDocIds.size < typeaheadMetadata.maxResults) {
+                val stillNeeded = typeaheadMetadata.maxResults - candidateDocIds.size
+                currentState.documentStore.keys.asSequence()
+                    .filter { it !in candidateDocIds }
+                    .take(stillNeeded)
+                    .forEach { candidateDocIds.add(it) }
+            }
         }
 
-        if (candidateDocIds.isEmpty()) return@withContext emptyList()
-
-        // Stage 3: Score each candidate using MaxSim + positional bonuses
         val topResultsQueue = ConcurrentPriorityQueue(
             maxSize = typeaheadMetadata.maxResults,
             dispatcher = defaultDispatcher,
-            comparator = compareByDescending<Pair<T, Float>> { it.second }
-                .thenBy { it.first.hashCode() },
+            comparator = compareByDescending { it.second },
             keySelector = { it: Pair<T, Float> -> keySelector(it.first) }
         )
 
@@ -208,7 +209,7 @@ class TypeaheadSearchEngine<T, K>(
 
                 for (queryToken in queryTokens) {
                     // Optimization note: qVector could be pre-computed once outside the lambda
-                    val qVector = embedding(queryToken)
+                    val qVector = currentState.vocabulary[queryToken] ?: embedding(queryToken)
 
                     var bestScore = 0.0f
                     var bestPosition = -1
@@ -703,8 +704,9 @@ class TypeaheadSearchEngine<T, K>(
     /**
      * Splits the input text into lowercase word tokens, filtering out blanks.
      */
-    private fun tokenize(text: String): List<String> {
-        return text.lowercase().split(TOKENIZE_REGEX).filter { it.isNotBlank() }
+    fun tokenize(text: String): List<String> {
+        val tokenizeRegex = Regex(typeaheadMetadata.tokenizeRegexString)
+        return text.lowercase().split(tokenizeRegex).filter { it.isNotBlank() }
     }
 
     companion object {
@@ -729,7 +731,7 @@ class TypeaheadSearchEngine<T, K>(
         const val FIND_BATCH_SIZE = 512
         const val DEFAULT_TOP_K_VOCAB = 10
         const val DEFAULT_ADJACENCY_BONUS = 0.1f
-        private val TOKENIZE_REGEX = Regex("\\W+")
+        const val DEFAULT_TOKENIZE_REGEX_STRING = """[^\p{L}\d]+"""
 
         /**
          * A high-performance, in-memory fuzzy search engine designed for typeahead capabilities.

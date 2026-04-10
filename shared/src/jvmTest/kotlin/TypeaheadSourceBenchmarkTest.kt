@@ -45,7 +45,7 @@ import kotlin.time.Duration.Companion.minutes
  */
 class TypeaheadSourceBenchmarkTest {
 
-    private val targetSize = if (LOCAL) 10_000 else 1_000
+    private val targetSize = if (LOCAL) 100_000 else 1_000
     private val maxResults = if (LOCAL) 40 else 10
     private val query = "PQ82"
 
