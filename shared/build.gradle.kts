@@ -23,14 +23,14 @@ import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 //import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.jetbrains.kotlinMultiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
-    alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.jetbrains.serialization)
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
 group = "io.github.karloti"
-val projectVersion = "2.0.1"
+val projectVersion = "2.0.2"
 version = projectVersion
 
 kotlin {

@@ -16,7 +16,20 @@
 
 plugins {
     alias(libs.plugins.android.kotlin.multiplatform.library) apply false
-    alias(libs.plugins.kotlinMultiplatform) apply  false
-    alias(libs.plugins.kotlinSerialization) apply  false
+    alias(libs.plugins.jetbrains.kotlinMultiplatform) apply  false
+    alias(libs.plugins.jetbrains.serialization) apply  false
     alias(libs.plugins.vanniktech.mavenPublish) apply false
+    alias(libs.plugins.android.lint) apply false
+    alias(libs.plugins.android.application) apply false
+//    alias(libs.plugins.android.kmpLibrary) apply false
+    alias(libs.plugins.jetbrains.composeHotReload) apply false
+    alias(libs.plugins.jetbrains.composeMultiplatform) apply false
+    alias(libs.plugins.jetbrains.composeCompiler) apply false
+    alias(libs.plugins.jetbrains.kotlinJvm) apply false
+    alias(libs.plugins.ktor) apply false
+    alias(libs.plugins.google.devtoolsKsp) apply false
+//    alias(libs.plugins.stability.analyzer) apply false
+    alias(libs.plugins.google.services) apply false
+    alias(libs.plugins.google.firebase.crashlytics) apply false
+
 }
