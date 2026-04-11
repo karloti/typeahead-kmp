@@ -25,15 +25,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
-import io.github.karloti.typeahead.TypeaheadSearchEngine
 
 @Composable
-fun App(typeaheadSearchEngine: TypeaheadSearchEngine<Pair<String, String>, String>) {
+fun App() {
     val colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         typography = MaterialTheme.typography
     ) {
-        SearchScreen(typeaheadSearchEngine)
+        SearchScreen()
     }
 }

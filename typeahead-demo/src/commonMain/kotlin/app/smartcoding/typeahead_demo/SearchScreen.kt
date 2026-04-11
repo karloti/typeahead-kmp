@@ -18,202 +18,340 @@
 
 package app.smartcoding.typeahead_demo
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ExpandedDockedSearchBar
+import androidx.compose.material3.ExpandedFullScreenSearchBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MaterialTheme.colorScheme
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SearchBar
+import androidx.compose.material3.SearchBarDefaults.InputField
+import androidx.compose.material3.SearchBarValue
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSearchBarState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import io.github.karloti.typeahead.TypeaheadSearchEngine
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
-    typeaheadSearchEngine: TypeaheadSearchEngine<Pair<String, String>, String>,
     modifier: Modifier = Modifier
 ) {
-    val filteredResults by typeaheadSearchEngine.results.collectAsState()
+    val viewModel = viewModel<SearchViewModel>()
+    val filteredResults by viewModel.results.collectAsState()
 
-    var choice: Pair<String, String>? by remember {
-        mutableStateOf(null)
+    var selectedIndex by remember { mutableStateOf(-1) }
+    val options = listOf("Movies 86k", "Import File").withIndex().toList()
+
+    val listState = rememberLazyListState()
+    val searchBarState = rememberSearchBarState()
+    val scope = rememberCoroutineScope()
+
+    var searchBarPlaceholder by remember { mutableStateOf("") }
+
+
+    LaunchedEffect(viewModel.queryState.text) {
+        listState.scrollToItem(0)
     }
 
-    var linesCount by remember { mutableStateOf(0) }
-    var flow: Flow<String>? by remember { mutableStateOf(null) }
-    if (flow != null) LaunchedEffect(flow) {
-        typeaheadSearchEngine.clear()
-        flow?.parse(
-            typeaheadSearchEngine = typeaheadSearchEngine,
-            loadedLinesCount = {
-                linesCount = it
-            }
-        ) { flow = null }
+    LaunchedEffect(viewModel.isLoading) {
+        searchBarPlaceholder = if (viewModel.isLoading)
+            "Search is live — results update as data loads"
+        else
+            "Search indexed data..."
+
     }
 
-    var query by remember { mutableStateOf("") }
-    val cornerRadius = 16f
-    val customContainerColor = false
-    val containerColor = MaterialTheme.colorScheme.primaryContainer
-
-    var expanded by remember { mutableStateOf(false) }
-
-    val effectiveContainerColor = if (customContainerColor) containerColor else MaterialTheme.colorScheme.surface
-
-    LaunchedEffect(query) {
-        if (query.isNotEmpty()) typeaheadSearchEngine.find(query)
+    val inputField: @Composable () -> Unit = {
+        InputField(
+            modifier = Modifier.fillMaxWidth(),
+            textFieldState = viewModel.queryState,
+            searchBarState = searchBarState,
+            onSearch = { scope.launch { searchBarState.animateToCollapsed() } },
+            placeholder = { Text(searchBarPlaceholder) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = {
+                if (viewModel.queryState.text.isNotEmpty()) {
+                    IconButton(onClick = {
+                        viewModel.clearSearch()
+                        scope.launch { searchBarState.animateToCollapsed() }
+                    }) {
+                        Icon(Icons.Default.Clear, contentDescription = null)
+                    }
+                }
+            },
+            enabled = viewModel.linesCount > 0
+        )
     }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-    ) { paddingValues ->
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text("Typeahead Demo", fontWeight = FontWeight.SemiBold)
 
+                }
+            )
+        }
+    ) { paddingValues ->
         Column(
             modifier = Modifier
                 .padding(paddingValues)
-                .padding(16.dp),//.width(380.dp),
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                text = "Typeahead Demo",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
             OutlinedCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateContentSize(),
+                onClick = { viewModel.toggleInfo() }
             ) {
-                Text(
-                    text = """
-                    This demo showcases a high-performance Typeahead engine capable of loading large text files into memory for instant searching. 
-                    
-                    The file format requires each line to start with a unique key, followed by a space and the searchable content.
-                    """.trimIndent(),
-                    modifier = modifier.padding(16.dp),
-                )
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = null,
+                            tint = colorScheme.primary
+                        )
+                        Text(
+                            text = "Engine Documentation",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        val rotation by animateFloatAsState(if (viewModel.infoExpanded) 180f else 0f)
+                        Icon(
+                            Icons.Default.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.rotate(rotation)
+                        )
+                    }
+
+                    if (viewModel.infoExpanded) {
+                        Text(
+                            text = "This engine is optimized for high-performance searching. It indexes data in real-time, allowing you to search even while a file is still loading.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "Data Requirements:",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = colorScheme.primary
+                        )
+                        Text(
+                            text = "Each line must begin with a UNIQUE KEY, followed by a separator (SPACE or TAB). Compatible with common TSV (Tab-Separated Values) files.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Button(
-                    onClick = {
-                        flow = streamDemoFile("/movies.txt")
-                    },
-                    enabled = flow == null
-                ) {
-                    Text("movies 86k")
-                }
-                Button(
-                    onClick = {
-                        flow = streamDemoFile("/movies_1_5M.txt")
-                    },
-                    enabled = flow == null
-                ) {
-                    Text("movies 1500k")
-                }
-                Button(
-                    onClick = {
-                        pickLocalFileAndStream { customFileFlow -> flow = customFileFlow }
-                    },
-                    enabled = flow == null
-                ) {
-                    Text("Import file")
-                }
-            }
+                options.forEach { (index, label) ->
+                    SegmentedButton(
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = options.size
+                        ),
+                        onClick = {
+                            selectedIndex = index
+                            when (index) {
+                                0 -> viewModel.loadSource(
+                                    streamDemoFile("/movies.txt"),
+                                    expectedLines = 86_000
+                                )
 
-            Text("Прочетени: $linesCount")
-
-            DockedSearchBar(
-                inputField = {
-                    TextField(
-                        value = query,
-                        onValueChange = {
-                            query = it
-                            if (it.isNotEmpty() && !expanded) expanded = true
-                        },
-                        placeholder = {
-                            Text("Search...", color = MaterialTheme.colorScheme.onSurface)
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.Search,
-                                contentDescription = "Search Icon"
-                            )
-                        },
-                        trailingIcon = {
-                            if (query.isNotEmpty()) {
-                                IconButton(
-                                    onClick = {
-                                        query = ""
-                                        expanded = false
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Clear,
-                                        contentDescription = "Clear search"
-                                    )
-                                }
+                                1 -> pickLocalFileAndStream { viewModel.loadSource(it) }
                             }
                         },
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            disabledContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                        ),
-                        modifier = Modifier.fillMaxWidth()
+                        selected = index == selectedIndex,
+                        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                        enabled = !viewModel.isLoading
                     )
-                },
-                expanded = expanded,
-                onExpandedChange = { expanded = it },
-                shape = RoundedCornerShape(cornerRadius.dp),
-                colors = SearchBarDefaults.colors(containerColor = effectiveContainerColor),
-                tonalElevation = 4f.dp,
-                shadowElevation = 8f.dp,
-                modifier = Modifier.fillMaxWidth(),
+                }
+            }
+
+            AnimatedVisibility(
+                visible = viewModel.isLoading || viewModel.linesCount > 0,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (viewModel.isLoading) {
+                        val progress = viewModel.loadProgress
+                        val animatedProgress by animateFloatAsState(
+                            targetValue = progress ?: 0f
+                        )
+                        if (progress != null) {
+                            LinearProgressIndicator(
+                                progress = { animatedProgress },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            val progressText = if (progress != null) {
+                                val percent = (progress * 100).toInt()
+                                "Indexing: ${viewModel.linesCount} records ($percent%)"
+                            } else {
+                                "Indexing: ${viewModel.linesCount} records..."
+                            }
+                            Text(
+                                text = progressText,
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { viewModel.stopLoading() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Stop,
+                                    contentDescription = "Stop loading",
+                                    tint = colorScheme.error
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Ready: ${viewModel.linesCount} records indexed",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+
+            SearchBar(
+                modifier = Modifier,
+                state = searchBarState,
+                inputField = inputField
+            )
+
+            ExpandedFullScreenSearchBar(
+                state = searchBarState,
+                inputField = inputField,
+                modifier = Modifier.fillMaxSize(),
                 content = {
-                    LazyColumn {
-                        if (filteredResults.isEmpty() && query.isNotEmpty()) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        state = listState,
+                        contentPadding = PaddingValues(16.dp),
+                    ) {
+                        if (filteredResults.isEmpty() && viewModel.queryState.text.isNotEmpty()) {
                             item {
-                                ListItem(
-                                    headlineContent = {
-                                        Text(
-                                            "No results found for \"$query\"",
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
+                                Text(
+                                    "No results found for \"${viewModel.queryState.text}\"",
+                                    modifier = Modifier.padding(16.dp),
+                                    style = MaterialTheme.typography.bodyLarge
                                 )
                             }
                         } else {
-                            items(filteredResults) { (result, score) ->
+                            items(
+                                items = filteredResults,
+                                key = { it.first }
+                            ) { (result, score) ->
                                 ListItem(
+                                    colors = ListItemDefaults.colors(
+                                        containerColor = colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                    ),
+                                    modifier = Modifier.animateItem().clickable(
+                                        onClick = {
+                                            viewModel.onQueryChanged(result.second)
+                                            scope.launch { searchBarState.animateToCollapsed() }
+                                        }
+                                    ),
                                     headlineContent = {
-                                        val heatmap = typeaheadSearchEngine.heatmap(result.second) ?: return@ListItem
-                                        heatmap.HeatMap(
-                                            code = result.second,
-                                        )
-                                    },
-                                    leadingContent = {
-                                        Icon(
-                                            Icons.Default.Search,
-                                            contentDescription = null
-                                        )
+                                        val heatmap = viewModel.getHeatmap(result.second)
+                                        if (heatmap != null) {
+                                            Heatmap(heatmap)
+                                        } else {
+                                            Text(result.second)
+                                        }
                                     },
                                     trailingContent = {
-                                        Text(
-                                            text = score.toString().take(5),
-                                        )
+                                        Text("$score".take(5))
                                     },
+                                    supportingContent = {
+                                        Text(
+                                            fontStyle = MaterialTheme.typography.bodySmall.fontStyle,
+                                            text = "Index: ${result.first}"
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -221,18 +359,15 @@ fun SearchScreen(
                 }
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            if (searchBarState.currentValue == SearchBarValue.Collapsed && viewModel.linesCount > 0) {
+                Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = "Search for something",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = "Powered by Kotlin Multiplatform",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(bottom = 16.dp)
                 )
             }
         }
-
     }
 }

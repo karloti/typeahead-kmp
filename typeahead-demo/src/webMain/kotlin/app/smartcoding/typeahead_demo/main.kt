@@ -18,6 +18,7 @@ package app.smartcoding.typeahead_demo
 
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.window.ComposeViewport
+import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.gitlive.firebase.Firebase
 import dev.gitlive.firebase.FirebaseOptions
 import dev.gitlive.firebase.initialize
@@ -56,6 +57,7 @@ fun main() {
     )
 
     ComposeViewport {
-        App(typeaheadSearchEngine)
+        viewModel { SearchViewModel(typeaheadSearchEngine) }
+        App()
     }
 }

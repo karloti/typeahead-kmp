@@ -72,7 +72,7 @@ actual fun streamLocalFile(file: File, chunkSize: Int): Flow<String> = callbackF
 
 
 // 2. Функция за UI: Отваря диалог и връща Flow-а чрез колбек
-actual fun pickLocalFileAndStream(onStreamReady: (Flow<String>) -> Unit): Unit {
+actual fun pickLocalFileAndStream(onStreamReady: (Flow<String>) -> Unit) {
     val input = document.createElement("input") as HTMLInputElement
     input.type = "file"
     input.accept = ".txt,.json,.csv"
@@ -96,7 +96,7 @@ actual fun streamDemoFile(filePath: String): Flow<String> = flow {
 
             while (!channel.isClosedForRead) {
                 // Изчакваме следващия ред, без да блокираме UI нишката
-                val line = channel.readUTF8Line()
+                val line = channel.readLine()
                 if (line != null) {
                     emit(line.trimEnd('\r'))
                 }
