@@ -172,51 +172,91 @@ class TypeaheadSearchEngine<T, K>(
         val queryTokens = tokenize(query)
         if (queryTokens.isEmpty()) return@withContext emptyList()
 
-        // ── Phase 1: Vocabulary scan → candidate document set ──
-        // For each query token, find the topK most similar vocabulary tokens,
-        // then expand each into its inverted-index document list.
-        // The UNION of all document IDs forms the candidate set.
+        val tokenCount = queryTokens.size
+        val queryTokenList = queryTokens.toList()
 
-        val candidateDocIds: Set<DocId> = queryTokens
-            .asFlow()
-            .map { queryToken ->
-                val qVector = currentState.embeddings[queryToken] ?: embedding(queryToken)
-                val cpq = ConcurrentPriorityQueue(
-                    maxSize = typeaheadMetadata.topKVocab,
-                    dispatcher = defaultDispatcher,
-                    comparator = compareByDescending(Pair<Token, Float>::second),
-                    keySelector = Pair<Token, Float>::first
-                )
-                cpq.addAll(
-                    elements = currentState.embeddings.entries.asSequence().asFlow(),
-                    transform = { (vocabWord, vocabVector) ->
-                        vocabWord to (qVector dotProduct vocabVector)
-                    }
-                )
-                cpq.items.value.map { it.first }.toSet()
+        // Cache query vectors before both phases (also used by heatmap).
+        val queryVectors = Array(tokenCount) { i ->
+            currentState.embeddings[queryTokenList[i]] ?: embedding(queryTokenList[i])
+        }
+        _lastQueryVectors = buildMap(tokenCount) {
+            for (i in 0 until tokenCount) put(queryTokenList[i], queryVectors[i])
+        }
+
+        // ── Phase 1: Parallel vocabulary scan → candidate document set ──
+        // All Q query tokens scan the vocabulary CONCURRENTLY via async jobs.
+        // Each job finds its topK vocab matches; the inverted index expands
+        // them into document IDs.  The UNION forms the candidate set.
+
+        val candidateDocIds: Set<DocId> = coroutineScope {
+            val topKJobs = Array(tokenCount) { q ->
+                async {
+                    val qVector = queryVectors[q]
+                    val cpq = ConcurrentPriorityQueue(
+                        maxSize = typeaheadMetadata.topKVocab,
+                        dispatcher = defaultDispatcher,
+                        comparator = compareByDescending(Pair<Token, Float>::second),
+                        keySelector = Pair<Token, Float>::first
+                    )
+                    cpq.addAll(
+                        elements = currentState.embeddings.entries.asSequence().asFlow(),
+                        transform = { (vocabWord, vocabVector) ->
+                            vocabWord to (qVector dotProduct vocabVector)
+                        }
+                    )
+                    cpq.items.value.map { it.first }
+                }
             }
-            .flatMapMerge { it.asFlow() }
-            .flatMapMerge { vocabWord ->
-                currentState.index[vocabWord]?.keys?.asFlow() ?: emptyFlow()
+
+            val docIds = mutableSetOf<DocId>()
+            for (deferred in topKJobs) {
+                for (vocabToken in deferred.await()) {
+                    currentState.index[vocabToken]?.keys?.let { docIds.addAll(it) }
+                }
             }
-            .toSet()
+            docIds
+        }
 
         if (candidateDocIds.isEmpty()) return@withContext emptyList()
 
-        // Cache query vectors for Phase 2 scoring and for the heatmap function.
-        val queryVectors: Map<Token, SparseVector> = buildMap(queryTokens.size) {
-            for (qt in queryTokens) put(qt, currentState.embeddings[qt] ?: embedding(qt))
+        // ── Score cache: parallel pre-computation of (queryToken, vocabToken) dotProducts ──
+        // Doc tokens ARE vocab tokens (Flyweight cache), so dotProduct(q[i], docToken)
+        // is identical regardless of which document contains it.  We collect all unique
+        // tokens across candidates, split them into chunks, and compute each chunk in
+        // a separate coroutine.  Each chunk writes to non-overlapping array indices;
+        // coroutineScope guarantees visibility after all children join.
+
+        val uniqueDocTokens = mutableSetOf<Token>()
+        for (docId in candidateDocIds) {
+            currentState.tokens[docId]?.let { uniqueDocTokens.addAll(it) }
         }
-        _lastQueryVectors = queryVectors
 
-        // ── Phase 2: Score each candidate via full dotProduct + geometric mean ──
-        // For every candidate document we re-compute the actual dotProduct between
-        // each query vector and ALL document-token vectors.  This is critical:
-        // a document may have been discovered through only ONE query token's topK,
-        // yet it can still match the other query tokens well (e.g. "Harry Potter"
-        // found via "harry" for q="hari" also contains "potter" for q="poter").
+        val tokenList = uniqueDocTokens.toList()
+        val cacheEntries = arrayOfNulls<FloatArray>(tokenList.size)
 
-        val tokenCount = queryTokens.size
+        coroutineScope {
+            val chunkSize = (tokenList.size + 3) / 4 // ~4 parallel chunks
+            for (start in tokenList.indices step chunkSize) {
+                val end = min(start + chunkSize, tokenList.size)
+                launch {
+                    for (i in start until end) {
+                        val dVector = currentState.embeddings[tokenList[i]] ?: continue
+                        val scores = FloatArray(tokenCount)
+                        for (q in 0 until tokenCount) {
+                            scores[q] = queryVectors[q] dotProduct dVector
+                        }
+                        cacheEntries[i] = scores
+                    }
+                }
+            }
+        }
+
+        val scoreCache = HashMap<Token, FloatArray>(tokenList.size)
+        for (i in tokenList.indices) {
+            cacheEntries[i]?.let { scoreCache[tokenList[i]] = it }
+        }
+
+        // ── Phase 2: Score candidates via cached lookups + harmonic mean ──
 
         val topResultsQueue = ConcurrentPriorityQueue(
             maxSize = typeaheadMetadata.maxResults,
@@ -231,28 +271,24 @@ class TypeaheadSearchEngine<T, K>(
                 val docTokens = currentState.tokens[docId]!!
                 val matchScores = FloatArray(tokenCount)
                 val matchPositions = mutableListOf<Int>()
-                var idx = 0
 
-                for (queryToken in queryTokens) {
-                    val qVector = queryVectors[queryToken] ?: continue
+                for (q in 0 until tokenCount) {
                     var bestScore = 0.0f
                     var bestMatchToken: Token? = null
 
                     for (docToken in docTokens) {
-                        val dVector = currentState.embeddings[docToken] ?: continue
-                        val score = qVector dotProduct dVector
+                        val score = scoreCache[docToken]?.get(q) ?: 0f
                         if (score > bestScore) {
                             bestScore = score
                             bestMatchToken = docToken
                         }
                     }
 
-                    matchScores[idx] = bestScore
+                    matchScores[q] = bestScore
                     if (bestScore > 0f && bestMatchToken != null) {
                         val pos = currentState.index[bestMatchToken]?.get(docId) ?: -1
                         if (pos >= 0) matchPositions.add(pos)
                     }
-                    idx++
                 }
 
                 // Harmonic mean: heavily penalises results where some query tokens
@@ -360,10 +396,12 @@ class TypeaheadSearchEngine<T, K>(
      *    receive a score of `1.0f` immediately (no embedding lookup needed because
      *    L2-normalised vectors have `dotProduct == 1.0` with themselves).
      *
-     * 2. **Fuzzy matching** — remaining query tokens are matched against remaining
-     *    document tokens via [SparseVector.dotProduct] on the cached embeddings.
-     *    Each query token keeps only its best match; the matched document token is
-     *    removed from the candidate set so it cannot be reused.
+     * 2. **Proximity-aware fuzzy matching** — remaining query tokens are scored
+     *    against document tokens via [SparseVector.dotProduct]. For each query token
+     *    the top-K candidates by cosine are retained. All valid 1:1 assignments are
+     *    enumerated via backtracking and scored using harmonic mean of cosines ×
+     *    proximity factor (same formula as [find]), preferring structurally similar
+     *    tokens positioned near each other over high-cosine but distant matches.
      *
      * 3. **Per-word colouring** — for every matched `(queryToken, docToken)` pair
      *    the existing [String.toHeatmap] is called on the original-case word span,
@@ -394,28 +432,107 @@ class TypeaheadSearchEngine<T, K>(
         val exactMatches = (querySet intersect targetSet)
             .map { (it to it) to 1.0f }
 
-        // ── Phase 2: Fuzzy matches via dotProduct ──
+        // ── Phase 2: Proximity-aware fuzzy matches ──
         val toScoreSet = querySet - targetSet
         val remainingTargets = (targetSet - querySet).toMutableSet()
         val queryEmbeddings = _lastQueryVectors
 
-        val fuzzyMatches = mutableListOf<Pair<Pair<Token, Token>, Float>>()
-        for (qToken in toScoreSet) {
-            val qVec = queryEmbeddings[qToken] ?: continue
-            var bestTarget: Token? = null
-            var bestScore = 0f
-            for (tToken in remainingTargets) {
-                val dVec = snapshot.embeddings[tToken] ?: continue
-                val score = qVec dotProduct dVec
-                if (score > bestScore) {
-                    bestScore = score
-                    bestTarget = tToken
+        // Collect positions of exact-matched tokens for proximity context
+        val exactPositions = mutableListOf<Int>()
+        for ((pair, _) in exactMatches) {
+            val pos = snapshot.index[pair.first]?.get(docId) ?: -1
+            if (pos >= 0) exactPositions.add(pos)
+        }
+
+        val fuzzyMatches: List<Pair<Pair<Token, Token>, Float>>
+        val fuzzyQueryTokens = toScoreSet.toList()
+
+        if (fuzzyQueryTokens.isEmpty()) {
+            fuzzyMatches = emptyList()
+        } else {
+            // For each query token, find top-K doc token candidates by cosine
+            val topK = 5
+            val candidates = Array(fuzzyQueryTokens.size) { q ->
+                val qVec = queryEmbeddings[fuzzyQueryTokens[q]]
+                if (qVec == null) {
+                    emptyList()
+                } else {
+                    val scored = mutableListOf<Triple<Token, Float, Int>>() // token, cosine, position
+                    for (tToken in remainingTargets) {
+                        val dVec = snapshot.embeddings[tToken] ?: continue
+                        val score = qVec dotProduct dVec
+                        if (score > 0f) {
+                            val pos = snapshot.index[tToken]?.get(docId) ?: -1
+                            scored.add(Triple(tToken, score, pos))
+                        }
+                    }
+                    scored.sortByDescending { it.second }
+                    scored.take(topK)
                 }
             }
-            if (bestTarget != null && bestScore > 0f) {
-                fuzzyMatches.add((qToken to bestTarget) to bestScore)
-                remainingTargets.remove(bestTarget)
+
+            // Enumerate 1:1 assignments via backtracking, score with cosine × proximity.
+            // Coverage is maximised first (more matched tokens always wins), then
+            // ties are broken by harmonic_mean × proximity_factor.
+            var bestAssignment = emptyList<Pair<Pair<Token, Token>, Float>>()
+            var bestMatchCount = -1
+            var bestCombinedScore = -1f
+
+            fun backtrack(
+                qIdx: Int,
+                usedTargets: MutableSet<Token>,
+                current: MutableList<Pair<Pair<Token, Token>, Float>>,
+                currentPositions: MutableList<Int>
+            ) {
+                if (qIdx == fuzzyQueryTokens.size) {
+                    val matchCount = current.size
+                    if (matchCount < bestMatchCount) return // fewer matches → never better
+
+                    val allPositions = exactPositions + currentPositions.filter { it >= 0 }
+                    val scores = current.map { it.second }
+                    val cosineComponent = if (scores.isEmpty()) 0f else {
+                        var recipSum = 0.0
+                        for (s in scores) recipSum += 1.0 / s.toDouble().coerceAtLeast(1e-6)
+                        (scores.size.toDouble() / recipSum).toFloat()
+                    }
+                    val proximityFactor = if (allPositions.size >= 2) {
+                        val sorted = allPositions.sorted()
+                        var totalDecay = 0f
+                        for (i in 0 until sorted.size - 1) {
+                            val gap = (sorted[i + 1] - sorted[i] - 1).coerceAtLeast(0)
+                            totalDecay += 1f / (1 shl (gap + 1))
+                        }
+                        val maxDecay = (sorted.size - 1) * 0.5f
+                        1f - typeaheadMetadata.adjacencyBonus * (1f - totalDecay / maxDecay)
+                    } else 1f
+
+                    val combined = cosineComponent * proximityFactor
+                    if (matchCount > bestMatchCount || combined > bestCombinedScore) {
+                        bestMatchCount = matchCount
+                        bestCombinedScore = combined
+                        bestAssignment = current.toList()
+                    }
+                    return
+                }
+
+                // Try assigning one of the top-K candidates first
+                for ((token, score, pos) in candidates[qIdx]) {
+                    if (token in usedTargets) continue
+                    usedTargets.add(token)
+                    current.add((fuzzyQueryTokens[qIdx] to token) to score)
+                    currentPositions.add(pos)
+                    backtrack(qIdx + 1, usedTargets, current, currentPositions)
+                    currentPositions.removeAt(currentPositions.lastIndex)
+                    current.removeAt(current.lastIndex)
+                    usedTargets.remove(token)
+                }
+
+                // Fallback: skip this query token (no match for it)
+                backtrack(qIdx + 1, usedTargets, current, currentPositions)
             }
+
+            backtrack(0, mutableSetOf(), mutableListOf(), mutableListOf())
+            fuzzyMatches = bestAssignment
         }
 
         // ── Phase 3: Assemble and colour ──
@@ -782,7 +899,17 @@ class TypeaheadSearchEngine<T, K>(
             vector[skipKey] = (vector[skipKey] ?: 0.0f) + typeaheadMetadata.skipWeight
         }
 
-        // 6. Floating N-Grams (The structural skeleton)
+        // 6. Character Bag (Edit-distance proximity signal)
+        // One feature per distinct character, position-independent.
+        // Captures overall character composition so that strings differing by
+        if (typeaheadMetadata.charBagWeight > 0f) {
+            for (ch in word) {
+                val key = "CB_$ch"
+                if (key !in vector) vector[key] = typeaheadMetadata.charBagWeight
+            }
+        }
+
+        // 7. Floating N-Grams (The structural skeleton)
         for (i in 0 until length) {
             for (n in 2..typeaheadMetadata.maxNgramSize) {
                 if (i + n <= length) {
@@ -865,9 +992,10 @@ class TypeaheadSearchEngine<T, K>(
         const val DEFAULT_FUZZY_WEIGHT = 5.0f
         const val DEFAULT_SKIP_WEIGHT = 2.0f
         const val DEFAULT_FLOATING_WEIGHT = 1.0f
+        const val DEFAULT_CHAR_BAG_WEIGHT = 20.0f
         const val DEFAULT_MAX_RESULTS = 5
         const val FIND_BATCH_SIZE = 512
-        const val DEFAULT_TOP_K_VOCAB = 30
+        const val DEFAULT_TOP_K_VOCAB = 50
         const val DEFAULT_ADJACENCY_BONUS = 0.5f
         const val DEFAULT_TOKENIZE_REGEX_STRING = """[^\p{L}\d]+"""
         const val DEFAULT_HAVE_STORE = false
@@ -1229,6 +1357,19 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
             var forwardIndex = s.tokens
             var documentStore = s.store
 
+            val indexDocument: (DocId, List<String>) -> Unit = { docId, rawTokens ->
+                val canonicalTokens = LinkedHashSet<Token>(rawTokens.size)
+                rawTokens.forEachIndexed { position, raw ->
+                    val token = pool[raw] ?: raw.also { pool = pool.put(raw, it) }
+                    canonicalTokens.add(token)
+                    val bucket = invertedIndex[token] ?: persistentHashMapOf()
+                    val existingPos = bucket[docId]
+                    val newPos = if (existingPos == null) position else min(existingPos, position)
+                    invertedIndex = invertedIndex.put(token, bucket.put(docId, newPos))
+                }
+                forwardIndex = forwardIndex.put(docId, canonicalTokens.toPersistentHashSet())
+            }
+
             sequence.forEach { record ->
                 when (record) {
                     is TypeaheadMetadata -> {
@@ -1250,32 +1391,12 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
                     is TypeaheadPayload -> {
                         val item = record.item
                         val docId = generateDocId(item)
-
-                        val canonicalTokens = LinkedHashSet<Token>(record.tokens.size)
-                        record.tokens.forEachIndexed { position, raw ->
-                            val token = pool[raw] ?: raw.also { pool = pool.put(raw, it) }
-                            canonicalTokens.add(token)
-                            val bucket = invertedIndex[token] ?: persistentHashMapOf()
-                            val existingPos = bucket[docId]
-                            val newPos = if (existingPos == null) position else min(existingPos, position)
-                            invertedIndex = invertedIndex.put(token, bucket.put(docId, newPos))
-                        }
-                        forwardIndex = forwardIndex.put(docId, canonicalTokens.toPersistentHashSet())
+                        indexDocument(docId, record.tokens)
                         documentStore = documentStore?.put(docId, item)
                     }
 
                     is TypeaheadTokenPayload -> {
-                        val docId = record.docId
-                        val canonicalTokens = LinkedHashSet<Token>(record.tokens.size)
-                        record.tokens.forEachIndexed { position, raw ->
-                            val token = pool[raw] ?: raw.also { pool = pool.put(raw, it) }
-                            canonicalTokens.add(token)
-                            val bucket = invertedIndex[token] ?: persistentHashMapOf()
-                            val existingPos = bucket[docId]
-                            val newPos = if (existingPos == null) position else min(existingPos, position)
-                            invertedIndex = invertedIndex.put(token, bucket.put(docId, newPos))
-                        }
-                        forwardIndex = forwardIndex.put(docId, canonicalTokens.toPersistentHashSet())
+                        indexDocument(record.docId, record.tokens)
                     }
                 }
             }

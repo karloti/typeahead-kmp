@@ -25,11 +25,11 @@ and phonetic typos.
 ## Features
 
 *   **Multi-Word Fuzzy Search:** Query with one word or many—each token is independently vectorized and scored using
-    a geometric mean with exponential proximity decay for adjacent token matches.
+    a harmonic mean with exponential proximity decay for adjacent token matches.
 *   **Zero Network Latency:** Runs entirely on the Edge (the user's device memory), making it perfect for instant UI
     feedback.
-*   **Typo & Transposition Tolerant:** N-gram and positional embedding techniques catch mistakes that break standard
-    prefix searches—even across multiple query words simultaneously.
+*   **Typo & Transposition Tolerant:** N-gram, character bag, and positional embedding techniques catch mistakes that
+    break standard prefix searches—even single-character insertions or deletions across multiple query words.
 *   **100% Thread-Safe & Lock-Free:** Built on `MutableStateFlow` and `PersistentMap` (HAMT), allowing thousands of
     concurrent reads and writes without blocking threads.
 *   **Cold-Start Elimination:** Blazing-fast export and import of pre-computed vector states via streaming JSON
@@ -199,8 +199,8 @@ val results4 = engine.find("wormhole humanity survival").value
    terms are expanded through the **inverted index** to gather candidate documents.
 3. For each candidate, every query token finds its **best-matching document token** (full cosine similarity
    re-computation against all document tokens).
-4. The per-token similarity scores are combined using a **geometric mean**—a single unmatched query token drives the
-   score toward zero, strongly penalizing partial coverage.
+4. The per-token similarity scores are combined using a **harmonic mean**—a single unmatched query token drives the
+   score toward zero, penalizing partial coverage more aggressively than geometric or arithmetic means.
 5. An **exponential proximity decay** factor `1/2^(gap+1)` rewards documents where matched positions are adjacent
    (e.g., `"dark"` at position 1 and `"knight"` at position 2 yield maximum proximity). A **BM25-inspired length
    penalty** ensures long documents do not unfairly dominate short ones. The final score is clamped to `[0.0, 1.0]`.
@@ -392,9 +392,9 @@ Imagine you have indexed thousands of movies with their full descriptions. A use
 
 ```lua
 === Results for sloppy query: [hariy pota gobelt] ===
-1. Score: 0.232 | Harry Potter and the Goblet of Fire is a brilliant fantasy movie released in 2005.
-2. Score: 0.089 | Harry Potter and the Chamber of Secrets is also a great fantasy movie about wizards.
-3. Score: 0.011 | A completely unrelated movie where a magical goblet was found in the fire.
+1. Score: 0.347 | Harry Potter and the Goblet of Fire is a brilliant fantasy movie released in 2005.
+2. Score: 0.213 | A completely unrelated movie where a magical goblet was found in the fire.
+3. Score: 0.208 | Harry Potter and the Chamber of Secrets is also a great fantasy movie about wizards.
 ```
 
 **Why it works:**
@@ -403,8 +403,8 @@ Imagine you have indexed thousands of movies with their full descriptions. A use
 - `gobelt` fuzzy-matches `goblet` (transposed `e`/`l`) via n-gram overlap
 - The first result wins because all three query tokens match **adjacent positions** in the document,
   triggering the exponential proximity decay bonus (`1/2^(gap+1)` yields maximum proximity for consecutive tokens)
-- The geometric mean ensures the second result (missing `goblet`) is penalized for partial coverage
-- The third result has `goblet` and `fire` but not `harry` or `potter`—the geometric mean drives its score near zero
+- The harmonic mean ensures the second result (missing `goblet`) is penalized for partial coverage
+- The third result has `goblet` and `fire` but not `harry` or `potter`—the harmonic mean drives its score near zero
 
 ### Scenario: Three Words, All Misspelled
 
@@ -413,9 +413,9 @@ Even when **every word** in the query contains errors, the engine recovers:
 ```
 Query: "fsat brwon fxo" (intended: "fast brown fox")
 
-1. Score: 0.362 | The really fast brown fox jumps over the lazy dog.    ← Proximity decay maximized!
-2. Score: 0.248 | The fox is very fast but the brown bear is slow.      ← All words present, scattered
-3. Score: 0.176 | The fast rabbit jumps over the deep brown forest.     ← Missing "fox"
+1. Score: 0.606 | The really fast brown fox jumps over the lazy dog.    ← Proximity decay maximized!
+2. Score: 0.416 | The fox is very fast but the brown bear is slow.      ← All words present, scattered
+3. Score: 0.275 | The fast rabbit jumps over the deep brown forest.     ← Missing "fox"
 ```
 
 The exponential proximity decay gives the first document a clear lead because `fast`, `brown`, and `fox` appear
@@ -520,9 +520,9 @@ Instead, it functions as a highly specialized, local vector database:
     and GC pauses.
 2.  **Two-Stage Retrieval**: Stage 1 uses a **Flyweight Vocabulary Cache** and **Inverted Index** for `O(1)` candidate
     retrieval per vocabulary term—only relevant documents are scored, not the entire dataset. Stage 2 re-computes full
-    cosine similarity between each query token and every document token, then aggregates via **geometric mean** with
+    cosine similarity between each query token and every document token, then aggregates via **harmonic mean** with
     **exponential proximity decay** `1/2^(gap+1)` and BM25-inspired length normalization.
-3.  **Native Multi-Word Support**: Each query token is independently vectorized and matched. The geometric mean penalizes
+3.  **Native Multi-Word Support**: Each query token is independently vectorized and matched. The harmonic mean penalizes
     partial query coverage (a single unmatched token drives the score toward zero), while the proximity decay rewards
     tokens that match adjacent document positions—so `"dark knight"` naturally scores higher against `"...the dark knight
     rises..."` than against a document with `"dark"` and `"knight"` scattered far apart.

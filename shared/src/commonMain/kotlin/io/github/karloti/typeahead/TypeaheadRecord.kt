@@ -63,8 +63,12 @@ sealed interface TypeaheadRecord<out T> {
      * @property fuzzyWeight The weight for fuzzy prefix matching (transposition tolerant). Defaults to 5.0.
      * @property skipWeight The weight for skip-gram matching (insertion/deletion tolerant). Defaults to 2.0.
      * @property floatingWeight The weight for floating N-gram matching. Defaults to 1.0.
+     * @property charBagWeight The weight for character bag features (position-independent character composition).
+     *   Captures overall character similarity so that strings differing by 1-2 insertions/deletions
+     *   share most features (e.g., "дейсън" vs "джейсън" share 6/7 character bag features).
+     *   `0.0` = disabled. Defaults to 20.0.
      * @property maxResults The maximum number of results to return from a search query. Defaults to 5.
-     * @property topKVocab The number of top vocabulary matches to consider per query token during the fuzzy vocabulary scan. Defaults to 10.
+     * @property topKVocab The number of top vocabulary matches to consider per query token during the fuzzy vocabulary scan. Defaults to 50.
      * @property adjacencyBonus Proximity penalty weight controlling how much token distance affects scoring.
      *   Uses exponential decay `1/2^(gap+1)` between consecutive matched positions.
      *   `0.0` = proximity is ignored; `1.0` = far-apart matches are fully penalised. Defaults to 0.5.
@@ -82,17 +86,12 @@ sealed interface TypeaheadRecord<out T> {
         val fuzzyWeight: Float = TypeaheadSearchEngine.DEFAULT_FUZZY_WEIGHT,
         val skipWeight: Float = TypeaheadSearchEngine.DEFAULT_SKIP_WEIGHT,
         val floatingWeight: Float = TypeaheadSearchEngine.DEFAULT_FLOATING_WEIGHT,
+        val charBagWeight: Float = TypeaheadSearchEngine.DEFAULT_CHAR_BAG_WEIGHT,
         val maxResults: Int = TypeaheadSearchEngine.DEFAULT_MAX_RESULTS,
         val topKVocab: Int = TypeaheadSearchEngine.DEFAULT_TOP_K_VOCAB,
         val adjacencyBonus: Float = TypeaheadSearchEngine.DEFAULT_ADJACENCY_BONUS,
         val tokenizeRegexString: String = TypeaheadSearchEngine.DEFAULT_TOKENIZE_REGEX_STRING,
         val haveStore: Boolean = TypeaheadSearchEngine.DEFAULT_HAVE_STORE
-/*
-            floatingWeight = 5f,
-            prefixWeight = 1f,
-            anchorWeight = 1.0f,
-            fuzzyWeight = 2.0f
-*/
 
     ): TypeaheadRecord<Nothing>
 

@@ -34,7 +34,7 @@ data class Book(val isbn: String, val title: String, val author: String)
  * This suite validates the core behavior introduced by the multi-word refactoring:
  * - **Vocabulary (Flyweight cache)**: shared token-to-vector mappings across items.
  * - **Inverted Index**: token → item → positions lookup for candidate gathering.
- * - **Forward Index**: item → ordered token list for geometric mean scoring.
+ * - **Forward Index**: item → ordered token list for harmonic mean scoring.
  * - **Two-stage search**: vocabulary scan (Stage 1) + candidate scoring (Stage 2).
  * - **Proximity decay**: exponential `1/2^(gap+1)` rewards adjacent token matches.
  * - **Partial last-token fuzzy matching**: incomplete words at the end of the query.
