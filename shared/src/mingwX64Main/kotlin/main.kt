@@ -180,10 +180,11 @@ fun main(args: Array<String>) = runBlocking {
         t.println("  " + gray("■") + " Unmatched character")
         t.println()
 
-        matches.forEach { (path, score) ->
-            val highlightedName = targetName.toHeatmap(path.name).toHighlightedString(path.name)
-            t.println("  " + highlightedName + TextStyles.dim(" (score: ${score})"))
-            t.println(pathStyle("  └─ $path"))
+        matches.forEach { result ->
+            val highlightedName = searchEngine.heatmap(result.docId)
+                ?.toHighlightedString() ?: result.docId
+            t.println("  " + highlightedName + TextStyles.dim(" (score: ${result.score})"))
+            t.println(pathStyle("  └─ ${result.docId}"))
             t.println()
         }
 

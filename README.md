@@ -8,14 +8,14 @@ Multiplatform (KMP).
 Unlike standard search algorithms that fail during real-time typing, `typeahead-kmp` is built to understand the **"Blind
 Continuation" phenomenon**—where users make an early typo but intuitively continue typing the rest of the word
 correctly. It also supports **multi-word queries** across documents of any length—from short labels to long
-descriptions—using a tokenized two-stage retrieval architecture with **MaxSim scoring**, **Smart Positional Encoding**
-for adjacency bonuses, and **BM25-inspired length normalization**.
+descriptions—using a tokenized two-stage retrieval architecture with **Geometric Mean Scoring**, **Exponential Proximity
+Decay** for adjacency awareness, and **BM25-inspired length normalization**.
 
 Powered by a custom **L2-Normalized Sparse Vector Space** algorithm, a **Flyweight Vocabulary Cache**, an **Inverted
 Index**, and immutable state management, it acts as a highly optimized, local vector database. Each query token is
 independently matched against the vocabulary and scored against every document token, so searching for `"dark knight"`
 across thousands of movie descriptions works just as naturally as searching for a single word like `"batman"`. The engine
-yields a Cosine Similarity score between `0.0` and `1.0` while gracefully handling skipped characters, swapped letters,
+yields a normalized similarity score in `[0.0, 1.0]` while gracefully handling skipped characters, swapped letters,
 and phonetic typos.
 
 > **[Try the Live Demo](https://typeahead-service-942294408844.europe-west1.run.app)** — See the engine in action. Load a dataset, start typing (even with typos), and watch results update in real time as data is still being indexed.
@@ -24,8 +24,8 @@ and phonetic typos.
 
 ## Features
 
-*   **Multi-Word Fuzzy Search:** Query with one word or many—each token is independently vectorized and matched using
-    MaxSim scoring with adjacency bonuses for consecutive matches.
+*   **Multi-Word Fuzzy Search:** Query with one word or many—each token is independently vectorized and scored using
+    a geometric mean with exponential proximity decay for adjacent token matches.
 *   **Zero Network Latency:** Runs entirely on the Edge (the user's device memory), making it perfect for instant UI
     feedback.
 *   **Typo & Transposition Tolerant:** N-gram and positional embedding techniques catch mistakes that break standard
@@ -134,10 +134,11 @@ runBlocking {
 ### 3. Multi-Word Search Across Long Descriptions
 
 The engine is not limited to single-word lookups. You can search with multiple words—even misspelled ones—across
-documents of any length. Each query token is independently vectorized and scored against every token in the document
-using **MaxSim** (Maximum Similarity). When consecutive query tokens match adjacent positions in the document, a
-**Smart Positional Encoding** adjacency bonus amplifies the score. **BM25-inspired length normalization** prevents
-long documents from unfairly dominating short ones.
+documents of any length. Each query token is independently vectorized and matched against every token in the document
+via cosine similarity. The per-token scores are aggregated using a **Geometric Mean** (penalizing partial query
+coverage), multiplied by an **Exponential Proximity Decay** factor `1/2^(gap+1)` that rewards tokens matching
+adjacent positions in the document. **BM25-inspired length normalization** prevents long documents from unfairly
+dominating short ones.
 
 ```kotlin
 import io.github.karloti.typeahead.TypeaheadSearchEngine
@@ -179,7 +180,7 @@ val results1 = engine.find("batman").value
 
 // --- Multi-word query ---
 val results2 = engine.find("dark knight gotham").value
-// → #1: The Dark Knight (all 3 words match adjacent positions → adjacency bonus)
+// → #1: The Dark Knight (all 3 words match adjacent positions → proximity bonus)
 // → #2: The Dark Tower  (shares "dark" but not "knight" or "gotham")
 
 // --- Multi-word query with typos ---
@@ -194,11 +195,15 @@ val results4 = engine.find("wormhole humanity survival").value
 **How multi-word scoring works:**
 
 1. The query `"dark knight gotham"` is tokenized into `["dark", "knight", "gotham"]`.
-2. Each query token is vectorized and matched against the vocabulary via the **inverted index** to gather candidate
-   documents.
-3. For each candidate, every query token finds its **best-matching document token** (MaxSim).
-4. When `"dark"` matches position 1 and `"knight"` matches position 2 (adjacent), the adjacency bonus fires.
-5. The total score is normalized by query length and document length (BM25-inspired) to produce a fair ranking.
+2. Each query token is vectorized and compared against the vocabulary via a **top-K fuzzy scan**; matching vocabulary
+   terms are expanded through the **inverted index** to gather candidate documents.
+3. For each candidate, every query token finds its **best-matching document token** (full cosine similarity
+   re-computation against all document tokens).
+4. The per-token similarity scores are combined using a **geometric mean**—a single unmatched query token drives the
+   score toward zero, strongly penalizing partial coverage.
+5. An **exponential proximity decay** factor `1/2^(gap+1)` rewards documents where matched positions are adjacent
+   (e.g., `"dark"` at position 1 and `"knight"` at position 2 yield maximum proximity). A **BM25-inspired length
+   penalty** ensures long documents do not unfairly dominate short ones. The final score is clamped to `[0.0, 1.0]`.
 
 ### 4. Searching with Highlights
 
@@ -387,9 +392,9 @@ Imagine you have indexed thousands of movies with their full descriptions. A use
 
 ```lua
 === Results for sloppy query: [hariy pota gobelt] ===
-1. Score: 0.108 | Harry Potter and the Goblet of Fire is a brilliant fantasy movie released in 2005.
-2. Score: 0.074 | Harry Potter and the Chamber of Secrets is also a great fantasy movie about wizards.
-3. Score: 0.038 | A completely unrelated movie where a magical goblet was found in the fire.
+1. Score: 0.232 | Harry Potter and the Goblet of Fire is a brilliant fantasy movie released in 2005.
+2. Score: 0.089 | Harry Potter and the Chamber of Secrets is also a great fantasy movie about wizards.
+3. Score: 0.011 | A completely unrelated movie where a magical goblet was found in the fire.
 ```
 
 **Why it works:**
@@ -397,9 +402,9 @@ Imagine you have indexed thousands of movies with their full descriptions. A use
 - `pota` fuzzy-matches `potter` (truncated suffix) via fuzzy prefix anchoring
 - `gobelt` fuzzy-matches `goblet` (transposed `e`/`l`) via n-gram overlap
 - The first result wins because all three query tokens match **adjacent positions** in the document,
-  triggering the Smart Positional Encoding adjacency bonus
-- The second result still scores well (shares `harry` and `potter`) but lacks `goblet`
-- The third result has `goblet` and `fire` but not `harry` or `potter`, so it ranks last
+  triggering the exponential proximity decay bonus (`1/2^(gap+1)` yields maximum proximity for consecutive tokens)
+- The geometric mean ensures the second result (missing `goblet`) is penalized for partial coverage
+- The third result has `goblet` and `fire` but not `harry` or `potter`—the geometric mean drives its score near zero
 
 ### Scenario: Three Words, All Misspelled
 
@@ -408,13 +413,13 @@ Even when **every word** in the query contains errors, the engine recovers:
 ```
 Query: "fsat brwon fxo" (intended: "fast brown fox")
 
-1. Score: 0.149 | The really fast brown fox jumps over the lazy dog...  ← Adjacency bonus fires!
-2. Score: 0.133 | The fox is very fast but the brown bear is slow...    ← All words present, scattered
-3. Score: 0.098 | The fast rabbit jumps over the deep brown forest...   ← Missing "fox"
+1. Score: 0.362 | The really fast brown fox jumps over the lazy dog.    ← Proximity decay maximized!
+2. Score: 0.248 | The fox is very fast but the brown bear is slow.      ← All words present, scattered
+3. Score: 0.176 | The fast rabbit jumps over the deep brown forest.     ← Missing "fox"
 ```
 
-The adjacency bonus gives the first document a measurable lead because `fast`, `brown`, and `fox` appear
-consecutively—even though the query tokens were all misspelled.
+The exponential proximity decay gives the first document a clear lead because `fast`, `brown`, and `fox` appear
+at consecutive positions—yielding a proximity ratio of `1.0`—even though all three query tokens were misspelled.
 
 ## Beyond UI: CLI Fuzzy File Finder
 
@@ -514,17 +519,19 @@ Instead, it functions as a highly specialized, local vector database:
     primitive `FloatArray` structures, strictly halving memory footprints and completely eliminating object fragmentation
     and GC pauses.
 2.  **Two-Stage Retrieval**: Stage 1 uses a **Flyweight Vocabulary Cache** and **Inverted Index** for `O(1)` candidate
-    retrieval per vocabulary term—only relevant documents are scored, not the entire dataset. Stage 2 applies **MaxSim
-    scoring** with Smart Positional Encoding and BM25-inspired length normalization.
-3.  **Native Multi-Word Support**: Each query token is independently vectorized and matched. Consecutive token matches
-    in the document receive an adjacency bonus, so `"dark knight"` naturally scores higher against a document containing
-    `"...the dark knight rises..."` than one with `"dark"` and `"knight"` scattered far apart.
+    retrieval per vocabulary term—only relevant documents are scored, not the entire dataset. Stage 2 re-computes full
+    cosine similarity between each query token and every document token, then aggregates via **geometric mean** with
+    **exponential proximity decay** `1/2^(gap+1)` and BM25-inspired length normalization.
+3.  **Native Multi-Word Support**: Each query token is independently vectorized and matched. The geometric mean penalizes
+    partial query coverage (a single unmatched token drives the score toward zero), while the proximity decay rewards
+    tokens that match adjacent document positions—so `"dark knight"` naturally scores higher against `"...the dark knight
+    rises..."` than against a document with `"dark"` and `"knight"` scattered far apart.
 4.  **Lock-Free Concurrency**: Utilizing immutable state (`PersistentMap`) and atomic Compare-And-Swap (CAS) operations
     via a custom `ConcurrentPriorityQueue`, the engine handles thousands of parallel reads and writes without ever
     locking a thread.
 5.  **Human-Centric Scoring**: By combining positional weighting (P0 Anchors) with N-gram tokenization, the engine
     seamlessly handles typos, transpositions, and the "Blind Continuation" effect across every word in the query,
-    dynamically yielding a precise Cosine Similarity score (`0.0` to `1.0`) in milliseconds.
+    dynamically yielding a normalized similarity score in `[0.0, 1.0]` in milliseconds.
 
 ## Algorithm Comparison
 

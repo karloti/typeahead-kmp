@@ -16,25 +16,21 @@
 
 package app.smartcoding.typeahead_demo
 
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.karloti.typeahead.TypeaheadResult
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -57,7 +53,11 @@ class SearchViewModel(
 
     var infoExpanded by mutableStateOf(true)
 
-    val results: StateFlow<List<Pair<Pair<String, String>, Float>>> = engine.results
+    val results: StateFlow<List<Pair<Pair<String, String>, Float>>> =
+        engine.storeResults ?: MutableStateFlow(emptyList())
+
+//    val storeResults: StateFlow<List<Pair<Pair<String, String>, Float>>>? = engine.storeResults
+//    val results: StateFlow<List<TypeaheadResult>> = engine.results
 
 
     private var loadJob: Job? = null
@@ -125,5 +125,6 @@ class SearchViewModel(
         infoExpanded = !infoExpanded
     }
 
-    fun getHeatmap(text: String) = engine.heatmap(text)?.toImmutableList()
+    fun getHeatmap(item: Pair<String, String>) =
+        engine.heatmap(engine.docIdFor(item))?.toImmutableList()
 }

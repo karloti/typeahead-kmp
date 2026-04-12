@@ -65,7 +65,9 @@ sealed interface TypeaheadRecord<out T> {
      * @property floatingWeight The weight for floating N-gram matching. Defaults to 1.0.
      * @property maxResults The maximum number of results to return from a search query. Defaults to 5.
      * @property topKVocab The number of top vocabulary matches to consider per query token during the fuzzy vocabulary scan. Defaults to 10.
-     * @property adjacencyBonus The multiplicative bonus applied when consecutive query tokens match adjacent positions in a document. Defaults to 0.1.
+     * @property adjacencyBonus Proximity penalty weight controlling how much token distance affects scoring.
+     *   Uses exponential decay `1/2^(gap+1)` between consecutive matched positions.
+     *   `0.0` = proximity is ignored; `1.0` = far-apart matches are fully penalised. Defaults to 0.5.
      * @property tokenizeRegexString The regular expression string used to split input text into tokens.
      */
     @Serializable
@@ -83,7 +85,30 @@ sealed interface TypeaheadRecord<out T> {
         val maxResults: Int = TypeaheadSearchEngine.DEFAULT_MAX_RESULTS,
         val topKVocab: Int = TypeaheadSearchEngine.DEFAULT_TOP_K_VOCAB,
         val adjacencyBonus: Float = TypeaheadSearchEngine.DEFAULT_ADJACENCY_BONUS,
-        val tokenizeRegexString: String = TypeaheadSearchEngine.DEFAULT_TOKENIZE_REGEX_STRING
+        val tokenizeRegexString: String = TypeaheadSearchEngine.DEFAULT_TOKENIZE_REGEX_STRING,
+        val haveStore: Boolean = TypeaheadSearchEngine.DEFAULT_HAVE_STORE
+/*
+            floatingWeight = 5f,
+            prefixWeight = 1f,
+            anchorWeight = 1.0f,
+            fuzzyWeight = 2.0f
+*/
+
     ): TypeaheadRecord<Nothing>
+
+    /**
+     * A token-only payload for no-store mode.
+     * Contains the document's [docId] and its ordered [tokens] list,
+     * enabling full import/export without requiring the original [T] item.
+     *
+     * @property docId The composite document identifier.
+     * @property tokens The ordered list of tokens extracted from the document.
+     */
+    @Serializable
+    @SerialName("token_payload")
+    data class TypeaheadTokenPayload(
+        val docId: String,
+        val tokens: List<String>
+    ) : TypeaheadRecord<Nothing>
 
 }

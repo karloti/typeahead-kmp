@@ -43,15 +43,20 @@ import kotlinx.coroutines.flow.StateFlow
 interface TypeaheadSearch<T, K> {
 
     /**
-     * A [StateFlow] containing the latest search results as `(item, score)` pairs,
+     * A [StateFlow] containing the latest search results as [TypeaheadResult],
      * updated after each [find] call.
+     * Always populated regardless of [TypeaheadRecord.TypeaheadMetadata.haveStore].
      */
-    val results: StateFlow<List<Pair<T, Float>>>
+    val results: StateFlow<List<TypeaheadResult>>
 
     /**
-     * A [StateFlow] containing the latest search results with character-level heatmaps
-     * for UI highlighting, updated after each [find] call.
+     * A [StateFlow] containing the latest search results enriched with the original [T] items,
+     * or `null` when [TypeaheadRecord.TypeaheadMetadata.haveStore] is `false`.
+     *
+     * The nullable return type is intentional: it forces callers to handle the no-store case
+     * at compile time, preventing silent subscription to an always-empty flow.
      */
+    val storeResults: StateFlow<List<Pair<T, Float>>>?
 
     /**
      * The number of distinct text keys currently indexed in the vector space.
@@ -62,23 +67,22 @@ interface TypeaheadSearch<T, K> {
     val size: Int
 
     /**
-     * Updates the active query and performs a cosine-similarity search against all
-     * indexed embeddings, storing the ranked matches in the [results] `StateFlow`.
+     * Updates the active query and performs a two-stage retrieval search, storing
+     * the ranked matches in the [results] `StateFlow` (and [storeResults] if a store is enabled).
      *
      * Blank queries clear the result set immediately. The returned [StateFlow] is the
      * same [results] instance, allowing callers to either read `.value` once or collect
      * it reactively for live updates.
      *
      * ```kotlin
-     * val results: StateFlow<List<Pair<String, Float>>> = engine.find("Kot")
-     * // results.value[0] == ("Kotlin" to 0.95f)
+     * val results: StateFlow<List<TypeaheadResult>> = engine.find("Kot")
+     * // results.value[0].docId, results.value[0].score
      * ```
      *
      * @param query The user's input string to search for.
-     * @return The [results] `StateFlow` containing descending-score pairs of matched
-     *         objects and their similarity scores `[0.0, 1.0]`.
+     * @return The [results] `StateFlow`.
      */
-    suspend fun find(query: String): StateFlow<List<Pair<T, Float>>>
+    suspend fun find(query: String): StateFlow<List<TypeaheadResult>>
 
     /**
      * Adds a single element to the search engine.

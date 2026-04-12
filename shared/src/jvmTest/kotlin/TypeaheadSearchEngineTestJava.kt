@@ -172,22 +172,22 @@ class TypeaheadSearchEngineTestJava {
             "Results count should match before and after import."
         )
 
-        val sortedBefore = resultsBeforeExport.sortedWith(compareByDescending<Pair<Product, Float>> { it.second }.thenBy { it.first.id })
-        val sortedAfter = resultsAfterImport.sortedWith(compareByDescending<Pair<Product, Float>> { it.second }.thenBy { it.first.id })
+        val sortedBefore = resultsBeforeExport.sortedWith(compareByDescending<io.github.karloti.typeahead.TypeaheadResult> { it.score }.thenBy { it.docId })
+        val sortedAfter = resultsAfterImport.sortedWith(compareByDescending<io.github.karloti.typeahead.TypeaheadResult> { it.score }.thenBy { it.docId })
 
         sortedBefore.zip(sortedAfter).forEachIndexed { index, (before, after) ->
             assertEquals(
-                before.second,
-                after.second,
-                "Score at index $index should match before and after import.\n before: ${before.second}\n  after: ${after.second}"
+                before.score,
+                after.score,
+                "Score at index $index should match before and after import.\n before: ${before.score}\n  after: ${after.score}"
             )
             assertEquals(
-                expected = before.first.id,
-                actual = after.first.id,
+                expected = before.docId,
+                actual = after.docId,
                 message = """
-                    Product ID at index $index should match before and after import.
-                    before: ${before.first} score: ${before.second}
-                     after: ${after.first} score: ${after.second}
+                    DocId at index $index should match before and after import.
+                    before: ${before.docId} score: ${before.score}
+                     after: ${after.docId} score: ${after.score}
                      """.trimIndent()
             )
         }

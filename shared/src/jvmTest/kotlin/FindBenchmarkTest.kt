@@ -286,14 +286,14 @@ class FindBenchmarkTest {
 
             assertEquals(seqResults.size, parResults.size, "Result count must match for query=\"$query\"")
 
-            val seqScores = seqResults.map { it.second }.sorted()
-            val parScores = parResults.map { it.second }.sorted()
+            val seqScores = seqResults.map { it.score }.sorted()
+            val parScores = parResults.map { it.score }.sorted()
             assertEquals(seqScores, parScores, "Score sets must match for query=\"$query\"")
 
             if (seqResults.isNotEmpty()) {
                 assertEquals(
-                    seqResults.first().second,
-                    parResults.first().second,
+                    seqResults.first().score,
+                    parResults.first().score,
                     "Top-1 score must match for query=\"$query\""
                 )
             }

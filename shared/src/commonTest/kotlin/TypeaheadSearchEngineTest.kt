@@ -77,7 +77,7 @@ class TypeaheadSearchEngineTest {
         launch {
             val searchEngine = TypeaheadSearchEngine.invoke(
                 items = countries,
-                metadata = TypeaheadMetadata(maxResults = 5),
+                metadata = TypeaheadMetadata(maxResults = 5, haveStore = true),
             )
 
             val queryToType = "Cnada"
@@ -87,7 +87,7 @@ class TypeaheadSearchEngineTest {
                 println("\n=== Typing: '$partialQuery' with typing error of '$queryToType' ===")
 
                 searchEngine.find(partialQuery)
-                val results = searchEngine.results.value
+                val results = searchEngine.storeResults!!.value
 
                 if (results.isEmpty()) {
                     println("No results found")
@@ -103,7 +103,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun testUltimateThreadSafetyAndFuzzySearch() = runTest(timeout = 1.minutes) {
-        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 10))
+        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 10, haveStore = true))
 
         val baselineItems = (1..50).map { "item-baseline-$it" }
         val itemsToRemove = (1..500).map { "item-to-remove-$it" }
@@ -175,12 +175,12 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun `test highlight heatmap for floating n-grams`() = runTest {
-        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 1))
+        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 1, haveStore = true))
         searchEngine.add("Bulgaria")
 
         var query = "blugaria"
         searchEngine.find(query)
-        var heatmap = query.toHeatmap(searchEngine.results.value.first().first)
+        var heatmap = query.toHeatmap(searchEngine.storeResults!!.value.first().first)
             .map { it.second }
         var expectedHeatmap = listOf(0, 2, 2, 0, 0, 0, 0, 0)
         assertContentEquals(
@@ -191,7 +191,7 @@ class TypeaheadSearchEngineTest {
 
         query = "bulgira "
         searchEngine.find(query)
-        heatmap = searchEngine.results.value.first().first.toHeatmap(query)
+        heatmap = searchEngine.storeResults.value.first().first.toHeatmap(query)
             .map { it.second }
         expectedHeatmap = listOf(0, 0, 0, 0, 2, 0, 2, -1)
         assertContentEquals(
@@ -203,7 +203,7 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun `test typing simulation with score progression and visual console highlighting`() = runTest {
-        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 1))
+        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(maxResults = 1, haveStore = true))
 
         // Add a primary target to observe
         searchEngine.add("Bulgaria")
@@ -247,7 +247,7 @@ class TypeaheadSearchEngineTest {
 
         for (query in typingSimulation) {
             searchEngine.find(query)
-            val (topMatch, score) = searchEngine.results.value.firstOrNull() ?: continue
+            val (topMatch, score) = searchEngine.storeResults!!.value.firstOrNull() ?: continue
 
             val highlightedText = query
                 .toHeatmap(topMatch)
@@ -268,7 +268,7 @@ class TypeaheadSearchEngineTest {
     @Test
     fun `test typing simulation with score progression and visual console highlighting2`() = runTest {
         val listOfCountries = countries.mapIndexed { index, country -> Country(index, country) }
-        val searchEngine = TypeaheadSearchEngine(items = listOfCountries, textSelector = Country::countryName)
+        val searchEngine = TypeaheadSearchEngine(items = listOfCountries, textSelector = Country::countryName, metadata = TypeaheadMetadata(haveStore = true))
         searchEngine.addAll(listOfCountries)
         val typingSimulation = listOf(
             // Transposed 'l' and 'g'.
@@ -310,7 +310,7 @@ class TypeaheadSearchEngineTest {
             val paddedQuery = query.padEnd(8, ' ')
             println(" Query: [\u001B[35m${paddedQuery}\u001B[0m]")
             searchEngine.find(query)
-            searchEngine.results.value.forEach { (result, score) ->
+            searchEngine.storeResults!!.value.forEach { (result, score) ->
                 val highlightedText = query
                     .toHeatmap(result.countryName)
                     .toHighlightedString()
@@ -382,7 +382,8 @@ class TypeaheadSearchEngineTest {
     fun `Verify engine deduplicates search results using custom unique key selector`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            keySelector = { it.docId }
+            keySelector = { it.docId },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -394,7 +395,8 @@ class TypeaheadSearchEngineTest {
             )
         )
 
-        val results = engine.find("Kotlin").value
+        engine.find("Kotlin")
+        val results = engine.storeResults!!.value
 
         assertEquals(3, results.size)
 
@@ -413,7 +415,8 @@ class TypeaheadSearchEngineTest {
     @Test
     fun `Verify engine default factory method uses element as unique key`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            textSelector = { it }
+            textSelector = { it },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -424,7 +427,8 @@ class TypeaheadSearchEngineTest {
                 "Apricot"
             )
         )
-        val results = engine.find("Ap").value
+        engine.find("Ap")
+        val results = engine.storeResults!!.value
 
         assertEquals(3, engine.size)
         assertContentEquals(listOf("Apple", "Apricot", "Banana"), results.map { it.first })
@@ -438,7 +442,8 @@ class TypeaheadSearchEngineTest {
     fun `add rejects duplicate items with the same textSelector key`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            keySelector = { it.docId }
+            keySelector = { it.docId },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         val first = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1)
@@ -448,7 +453,8 @@ class TypeaheadSearchEngineTest {
         engine.add(duplicate)
 
         assertEquals(1, engine.size, "Only one entry per unique textSelector key.")
-        val results = engine.find("Kotlin").value
+        engine.find("Kotlin")
+        val results = engine.storeResults!!.value
         assertEquals(1, results.size)
         assertEquals(1, results.first().first.version, "First-write wins: version 1 should be kept.")
     }
@@ -457,7 +463,8 @@ class TypeaheadSearchEngineTest {
     fun `addAll rejects duplicates within a single batch`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            keySelector = { it.docId }
+            keySelector = { it.docId },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -471,7 +478,8 @@ class TypeaheadSearchEngineTest {
         )
 
         assertEquals(2, engine.size, "Only 2 unique textSelector keys should be stored.")
-        val results = engine.find("Kotlin").value
+        engine.find("Kotlin")
+        val results = engine.storeResults!!.value
         assertEquals(2, results.size, "Both entries have non-zero fuzzy scores, so both appear in results.")
         val titles = results.map { it.first.title }.toSet()
         assertEquals(setOf("Kotlin Guide", "Coroutines Deep Dive"), titles)
@@ -495,7 +503,8 @@ class TypeaheadSearchEngineTest {
     fun `remove then re-add with same textSelector works correctly`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            keySelector = { it.docId }
+            keySelector = { it.docId },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         val v1 = VersionedDocument(docId = "doc-1", title = "Kotlin Guide", version = 1)
@@ -511,7 +520,8 @@ class TypeaheadSearchEngineTest {
 
         engine.add(v2)
         assertEquals(1, engine.size)
-        val results = engine.find("Kotlin").value
+        engine.find("Kotlin")
+        val results = engine.storeResults!!.value
         assertEquals(2, results.first().first.version, "After remove + re-add, version 2 should be stored.")
     }
 
@@ -549,7 +559,8 @@ class TypeaheadSearchEngineTest {
     fun `getAllItems returns exactly one item per textSelector key`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            keySelector = { it.docId }
+            keySelector = { it.docId },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -585,7 +596,8 @@ class TypeaheadSearchEngineTest {
     fun `Verify addAll deduplicates entries with matching unique key`() = runTest {
         val engine = TypeaheadSearchEngine<VersionedDocument, String>(
             textSelector = { it.title },
-            keySelector = { it.docId }
+            keySelector = { it.docId },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -597,10 +609,11 @@ class TypeaheadSearchEngineTest {
                 VersionedDocument(docId = "doc-2", title = "Advanced Kotlin Coroutines", version = 2),
             )
         )
-        val state = engine.state.value.forwardIndex
+        val state = engine.state.value.tokens
         assertEquals(2, state.size)
 
-        val results = engine.find("Kotlin").value
+        engine.find("Kotlin")
+        val results = engine.storeResults!!.value
 
         assertEquals(2, results.size, "Results must contain exactly 2 unique documents by docId.")
 
@@ -612,12 +625,12 @@ class TypeaheadSearchEngineTest {
 
     @Test
     fun `Verify State`() = runTest {
-        val searchEngine = TypeaheadSearchEngine<String>()
+        val searchEngine = TypeaheadSearchEngine<String>(metadata = TypeaheadMetadata(haveStore = true))
         searchEngine.add("Bulgaria")
 
         val query = "blugaria"
         searchEngine.find("blugaria")
-        searchEngine.results.value.first().first.toHeatmap(query)
+        searchEngine.storeResults!!.value.first().first.toHeatmap(query)
             .map { it.second }
             .let { topMatch ->
                 val expectedHeatmap = listOf(0, 2, 2, 0, 0, 0, 0, 0)
@@ -629,7 +642,7 @@ class TypeaheadSearchEngineTest {
             }
         val query1 = "bulgira "
         searchEngine.find(query1)
-        searchEngine.results.value.first().first.toHeatmap(query1)
+        searchEngine.storeResults.value.first().first.toHeatmap(query1)
             .map { it.second }
             .let { topMatch ->
             val expectedHeatmap = listOf(0, 0, 0, 0, 2, 0, 2, -1)
@@ -677,7 +690,8 @@ class TypeaheadSearchEngineTest {
     fun `country translations across multiple countries are all stored when text differs`() = runTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.name },
-            keySelector = { it.code }
+            keySelector = { it.code },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -726,7 +740,8 @@ class TypeaheadSearchEngineTest {
     fun `same word at different positions are all stored when keys differ`() = runTest {
         val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
             textSelector = { it.word },
-            keySelector = { it.position }
+            keySelector = { it.position },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.add(WordOccurrence(position = 0, word = "hello"))
@@ -760,7 +775,7 @@ class TypeaheadSearchEngineTest {
         val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
             textSelector = { it.word },
             keySelector = { it.position },
-            metadata = TypeaheadMetadata(maxResults = 10)
+            metadata = TypeaheadMetadata(maxResults = 10, haveStore = true)
         )
 
         engine.add(WordOccurrence(position = 0, word = "kotlin"))
@@ -768,7 +783,8 @@ class TypeaheadSearchEngineTest {
         engine.add(WordOccurrence(position = 20, word = "kotlin"))
         engine.add(WordOccurrence(position = 30, word = "java"))
 
-        val results = engine.find("kotlin").value
+        engine.find("kotlin")
+        val results = engine.storeResults!!.value
         val kotlinResults = results.filter { it.first.word == "kotlin" }
 
         assertEquals(3, kotlinResults.size, "All three 'kotlin' occurrences should appear in results.")
@@ -800,7 +816,7 @@ class TypeaheadSearchEngineTest {
         val engine = TypeaheadSearchEngine<WordOccurrence, Int>(
             textSelector = { it.word },
             keySelector = { it.position },
-            metadata = TypeaheadMetadata(maxResults = 10)
+            metadata = TypeaheadMetadata(maxResults = 10, haveStore = true)
         )
 
         val occ1 = WordOccurrence(position = 0, word = "hello")
@@ -821,7 +837,8 @@ class TypeaheadSearchEngineTest {
         assertTrue(occ3 in engine, "occ3 should still be present.")
 
         // Verify they are still searchable
-        val results = engine.find("hello").value
+        engine.find("hello")
+        val results = engine.storeResults!!.value
         assertEquals(2, results.size, "occ2 and occ3 should still appear in search results.")
         val remainingPositions = results.map { it.first.position }.toSet()
         assertEquals(setOf(5, 12), remainingPositions)
@@ -913,5 +930,115 @@ class TypeaheadSearchEngineTest {
         jobs.joinAll()
 
         assertEquals(50, engine.size, "50 unique positions with same text should all be stored.")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  MULTI-WORD HEATMAP TESTS (docId-based)
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `multi-word heatmap matches query tokens to correct doc tokens`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.add("Sofia Bulgaria")
+        engine.find("sfoia blugaria")
+
+        val docId = engine.results.value.first().docId
+        val heatmap = engine.heatmap(docId)
+        assertNotNull(heatmap, "Heatmap should not be null for an indexed doc.")
+        assertEquals(
+            "Sofia Bulgaria".length,
+            heatmap.size,
+            "Heatmap must have exactly as many entries as the target text."
+        )
+
+        // Characters in "Sofia" should be highlighted (not all TIER_NONE)
+        val sofiaTiers = heatmap.subList(0, 5).map { it.second }
+        assertTrue(
+            sofiaTiers.any { it != TypeaheadSearchEngine.TIER_NONE },
+            "Sofia word should have highlighted characters: $sofiaTiers"
+        )
+
+        // Characters in "Bulgaria" should be highlighted (not all TIER_NONE)
+        val bulgariaTiers = heatmap.subList(6, 14).map { it.second }
+        assertTrue(
+            bulgariaTiers.any { it != TypeaheadSearchEngine.TIER_NONE },
+            "Bulgaria word should have highlighted characters: $bulgariaTiers"
+        )
+
+        // The space between words must be TIER_NONE
+        assertEquals(
+            TypeaheadSearchEngine.TIER_NONE,
+            heatmap[5].second,
+            "Space character must be TIER_NONE."
+        )
+    }
+
+    @Test
+    fun `multi-word heatmap exact intersection tokens get score 1_0`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.add("Kotlin Multiplatform")
+        engine.find("kotlin coroutines")
+
+        val docId = engine.results.value.first().docId
+        val heatmap = engine.heatmap(docId)
+        assertNotNull(heatmap)
+
+        // "Kotlin" is an exact intersection token — all its chars should be TIER_PRIMARY (0)
+        val kotlinTiers = heatmap.subList(0, 6).map { it.second }
+        assertTrue(
+            kotlinTiers.all { it == TypeaheadSearchEngine.TIER_PRIMARY },
+            "Exact intersection token 'Kotlin' should have all TIER_PRIMARY chars: $kotlinTiers"
+        )
+    }
+
+    @Test
+    fun `multi-word heatmap single query token vs multi-word target`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.add("Central African Republic")
+        engine.find("african")
+
+        val docId = engine.results.value.first().docId
+        val heatmap = engine.heatmap(docId)
+        assertNotNull(heatmap)
+
+        // "African" (positions 8-14) should be highlighted, the rest TIER_NONE
+        val centralTiers = heatmap.subList(0, 7).map { it.second }
+        assertTrue(
+            centralTiers.all { it == TypeaheadSearchEngine.TIER_NONE },
+            "Unmatched word 'Central' should be all TIER_NONE: $centralTiers"
+        )
+
+        val africanTiers = heatmap.subList(8, 15).map { it.second }
+        assertTrue(
+            africanTiers.all { it == TypeaheadSearchEngine.TIER_PRIMARY },
+            "Exact matched 'African' should have highlighted chars: $africanTiers"
+        )
+    }
+
+    @Test
+    fun `multi-word heatmap spaces and separators are always TIER_NONE`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.add("New York")
+        engine.find("new york")
+
+        val docId = engine.results.value.first().docId
+        val heatmap = engine.heatmap(docId)
+        assertNotNull(heatmap)
+        assertEquals(8, heatmap.size) // "New York" = 8 chars
+
+        // Space at index 3 must be TIER_NONE
+        assertEquals(
+            TypeaheadSearchEngine.TIER_NONE,
+            heatmap[3].second,
+            "Space character must be TIER_NONE."
+        )
     }
 }

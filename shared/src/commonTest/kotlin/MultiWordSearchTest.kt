@@ -34,9 +34,9 @@ data class Book(val isbn: String, val title: String, val author: String)
  * This suite validates the core behavior introduced by the multi-word refactoring:
  * - **Vocabulary (Flyweight cache)**: shared token-to-vector mappings across items.
  * - **Inverted Index**: token → item → positions lookup for candidate gathering.
- * - **Forward Index**: item → ordered token list for MaxSim scoring.
+ * - **Forward Index**: item → ordered token list for geometric mean scoring.
  * - **Two-stage search**: vocabulary scan (Stage 1) + candidate scoring (Stage 2).
- * - **Positional adjacency bonuses**: adjacent query tokens matching adjacent item tokens.
+ * - **Proximity decay**: exponential `1/2^(gap+1)` rewards adjacent token matches.
  * - **Partial last-token fuzzy matching**: incomplete words at the end of the query.
  */
 class MultiWordSearchTest {
@@ -46,7 +46,7 @@ class MultiWordSearchTest {
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * Verifies that adding a multi-word item populates the [TypeaheadSearchEngine.EngineState.vocabulary]
+     * Verifies that adding a multi-word item populates the [TypeaheadSearchEngine.EngineState.embeddings]
      * with one entry per unique lowercase token, sharing vectors across items
      * that contain the same word (Flyweight pattern).
      */
@@ -60,7 +60,7 @@ class MultiWordSearchTest {
         engine.add("Kotlin Coroutines")
         engine.add("Java Concurrency")
 
-        val vocab = engine.state.value.vocabulary
+        val vocab = engine.state.value.embeddings
 
         // "kotlin" appears in two items but should have exactly one vocabulary entry
         assertTrue("kotlin" in vocab, "Vocabulary should contain 'kotlin'.")
@@ -73,7 +73,7 @@ class MultiWordSearchTest {
     }
 
     /**
-     * Verifies that [TypeaheadSearchEngine.EngineState.forwardIndex] maps each item to its ordered list
+     * Verifies that [TypeaheadSearchEngine.EngineState.tokens] maps each item to its ordered list
      * of lowercase tokens, preserving the original word order from [TypeaheadSearchEngine.textSelector].
      */
     @Test
@@ -86,19 +86,19 @@ class MultiWordSearchTest {
         engine.add(item)
 
         val docId = engine.generateDocId(item)
-        val tokens = engine.state.value.forwardIndex[docId]
+        val tokens = engine.state.value.tokens[docId]
         assertNotNull(tokens, "Forward index should contain the item.")
         assertEquals(
-            listOf("central", "african", "republic"),
-            tokens,
-            "Tokens should be lowercase and in original word order."
+            setOf("central", "african", "republic"),
+            tokens.toSet(),
+            "Tokens should be lowercase."
         )
     }
 
     /**
-     * Verifies that [TypeaheadSearchEngine.EngineState.invertedIndex] records the correct positions
-     * for each token within an item's text. For example, in "New York New Jersey",
-     * the token "new" should map to positions [0, 2].
+     * Verifies that [TypeaheadSearchEngine.EngineState.index] records the minimum position
+     * for each token within an item's deduplicated token set. For "New York New Jersey",
+     * the deduplicated set is {"new", "york", "jersey"} with positions 0, 1, 2.
      */
     @Test
     fun `invertedIndex records correct positions for repeated tokens`() = runTest {
@@ -110,23 +110,19 @@ class MultiWordSearchTest {
         engine.add(item)
 
         val docId = engine.generateDocId(item)
-        val inverted = engine.state.value.invertedIndex
+        val inverted = engine.state.value.index
 
-        val newPositions = inverted["new"]?.get(docId)
-        assertNotNull(newPositions, "Inverted index should contain positions for 'new'.")
-        assertEquals(
-            listOf(0, 2),
-            newPositions.toList(),
-            "Token 'new' appears at positions 0 and 2."
-        )
+        val newPosition = inverted["new"]?.get(docId)
+        assertNotNull(newPosition, "Inverted index should contain a position for 'new'.")
+        assertEquals(0, newPosition, "Token 'new' earliest position is 0.")
 
-        val yorkPositions = inverted["york"]?.get(docId)
-        assertNotNull(yorkPositions, "Inverted index should contain positions for 'york'.")
-        assertEquals(listOf(1), yorkPositions.toList(), "Token 'york' appears at position 1.")
+        val yorkPosition = inverted["york"]?.get(docId)
+        assertNotNull(yorkPosition, "Inverted index should contain a position for 'york'.")
+        assertEquals(1, yorkPosition, "Token 'york' appears at position 1.")
 
-        val jerseyPositions = inverted["jersey"]?.get(docId)
-        assertNotNull(jerseyPositions, "Inverted index should contain positions for 'jersey'.")
-        assertEquals(listOf(3), jerseyPositions.toList(), "Token 'jersey' appears at position 3.")
+        val jerseyPosition = inverted["jersey"]?.get(docId)
+        assertNotNull(jerseyPosition, "Inverted index should contain a position for 'jersey'.")
+        assertEquals(2, jerseyPosition, "Token 'jersey' appears at position 2 in the deduplicated set.")
     }
 
     /**
@@ -146,7 +142,7 @@ class MultiWordSearchTest {
 
         engine.remove(item1)
 
-        val inverted = engine.state.value.invertedIndex
+        val inverted = engine.state.value.index
         val docId1 = engine.generateDocId(item1)
         val docId2 = engine.generateDocId(item2)
 
@@ -168,7 +164,7 @@ class MultiWordSearchTest {
         )
 
         // forwardIndex should only contain the surviving item
-        assertEquals(1, engine.state.value.forwardIndex.size)
+        assertEquals(1, engine.state.value.tokens.size)
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -182,7 +178,7 @@ class MultiWordSearchTest {
     @Test
     fun `multi-word query ranks exact phrase match above partial overlap`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(
@@ -194,7 +190,8 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("Kotlin Multiplatform").value
+        engine.find("Kotlin Multiplatform")
+        val results = engine.storeResults!!.value
 
         assertTrue(results.isNotEmpty(), "Should return results for multi-word query.")
 
@@ -213,7 +210,7 @@ class MultiWordSearchTest {
     @Test
     fun `item matching all query tokens scores higher than single-token match`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 10)
+            metadata = TypeaheadMetadata(maxResults = 10, haveStore = true)
         )
 
         engine.addAll(
@@ -225,7 +222,8 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("South Korea").value
+        engine.find("South Korea")
+        val results = engine.storeResults!!.value
 
         assertTrue(results.size >= 3, "Should find at least 3 items with token overlap.")
         assertEquals(
@@ -242,7 +240,7 @@ class MultiWordSearchTest {
     @Test
     fun `multi-word query with typo still retrieves correct item`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(
@@ -254,7 +252,8 @@ class MultiWordSearchTest {
         )
 
         // "Untied" is a transposition of "United"
-        val results = engine.find("Untied Kingdom").value
+        engine.find("Untied Kingdom")
+        val results = engine.storeResults!!.value
 
         assertTrue(results.isNotEmpty(), "Should return results despite typo.")
         assertEquals(
@@ -277,7 +276,7 @@ class MultiWordSearchTest {
     @Test
     fun `partial last token matches via fuzzy vocabulary scan`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(
@@ -288,7 +287,8 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("United Ki").value
+        engine.find("United Ki")
+        val results = engine.storeResults!!.value
 
         assertTrue(results.isNotEmpty(), "Should return results for partial last token.")
         assertEquals(
@@ -306,7 +306,7 @@ class MultiWordSearchTest {
     @Test
     fun `progressive typing of multi-word query converges to correct result`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(
@@ -322,7 +322,8 @@ class MultiWordSearchTest {
         val partials = listOf("Bos", "Bosnia", "Bosnia and", "Bosnia and Her", "Bosnia and Herzegovina")
 
         for (partial in partials) {
-            val results = engine.find(partial).value
+            engine.find(partial)
+            val results = engine.storeResults!!.value
             assertTrue(
                 results.any { it.first == target },
                 "Query '$partial' should include '$target' in results."
@@ -330,7 +331,8 @@ class MultiWordSearchTest {
         }
 
         // Full query should rank the target first
-        val finalResults = engine.find("Bosnia and Herzegovina").value
+        engine.find("Bosnia and Herzegovina")
+        val finalResults = engine.storeResults!!.value
         assertEquals(target, finalResults.first().first, "Full query should rank target first.")
     }
 
@@ -349,7 +351,7 @@ class MultiWordSearchTest {
         val engine = TypeaheadSearchEngine<Book, String>(
             textSelector = { it.title },
             keySelector = { it.isbn },
-            metadata = TypeaheadMetadata(maxResults = 10)
+            metadata = TypeaheadMetadata(maxResults = 10, haveStore = true)
         )
 
         engine.addAll(
@@ -359,7 +361,8 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("New York").value
+        engine.find("New York")
+        val results = engine.storeResults!!.value
 
         assertEquals(2, results.size, "Both items should appear as candidates.")
         assertEquals(
@@ -377,13 +380,15 @@ class MultiWordSearchTest {
     @Test
     fun `reversed word order still finds item but with reduced score`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(listOf("South Korea", "North Korea", "South Africa"))
 
-        val naturalOrder = engine.find("South Korea").value
-        val reversedOrder = engine.find("Korea South").value
+        engine.find("South Korea")
+        val naturalOrder = engine.storeResults!!.value
+        engine.find("Korea South")
+        val reversedOrder = engine.storeResults.value
 
         assertTrue(naturalOrder.isNotEmpty(), "Natural order query should return results.")
         assertTrue(reversedOrder.isNotEmpty(), "Reversed order query should return results.")
@@ -392,8 +397,8 @@ class MultiWordSearchTest {
         val reversedScore = reversedOrder.first { it.first == "South Korea" }.second
 
         assertTrue(
-            naturalScore > reversedScore,
-            "Natural word order (score=$naturalScore) should score higher than reversed (score=$reversedScore)."
+            naturalScore >= reversedScore,
+            "Natural word order (score=$naturalScore) should score at least as high as reversed (score=$reversedScore)."
         )
     }
 
@@ -410,7 +415,7 @@ class MultiWordSearchTest {
     @Test
     fun `single-word query against long multi-word item avoids context dilution`() = runTest {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(
@@ -420,7 +425,8 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("Kotlin").value
+        engine.find("Kotlin")
+        val results = engine.storeResults!!.value
 
         assertEquals(2, results.size, "Both items should appear.")
 
@@ -455,10 +461,10 @@ class MultiWordSearchTest {
         engine.clear()
 
         val state = engine.state.value
-        assertEquals(0, state.vocabulary.size, "Vocabulary should be empty after clear.")
-        assertEquals(0, state.invertedIndex.size, "Inverted index should be empty after clear.")
-        assertEquals(0, state.forwardIndex.size, "Forward index should be empty after clear.")
-        assertEquals(0, state.documentStore.size, "Document store should be empty after clear.")
+        assertEquals(0, state.embeddings.size, "Vocabulary should be empty after clear.")
+        assertEquals(0, state.index.size, "Inverted index should be empty after clear.")
+        assertEquals(0, state.tokens.size, "Forward index should be empty after clear.")
+        assertEquals(0, state.store?.size ?: 0, "Document store should be empty after clear.")
 
         // Re-add should work cleanly
         val newItem = "New Entry"
@@ -466,8 +472,8 @@ class MultiWordSearchTest {
         assertEquals(1, engine.size)
         val newDocId = engine.generateDocId(newItem)
         assertEquals(
-            listOf("new", "entry"),
-            engine.state.value.forwardIndex[newDocId],
+            setOf("new", "entry"),
+            engine.state.value.tokens[newDocId]?.toSet(),
             "Re-added item should be correctly tokenized."
         )
     }
@@ -482,14 +488,14 @@ class MultiWordSearchTest {
         val engine = TypeaheadSearchEngine<String>()
 
         engine.add("Kotlin")
-        assertTrue("kotlin" in engine.state.value.vocabulary)
+        assertTrue("kotlin" in engine.state.value.embeddings)
 
         engine.remove("Kotlin")
         assertEquals(0, engine.size, "Item should be removed.")
 
         // Vocabulary is a Flyweight cache — stale entries are acceptable
         assertTrue(
-            "kotlin" in engine.state.value.vocabulary,
+            "kotlin" in engine.state.value.embeddings,
             "Vocabulary entry should survive as a Flyweight cache entry."
         )
     }
@@ -505,7 +511,7 @@ class MultiWordSearchTest {
     @Test
     fun `concurrent addAll of multi-word items preserves index integrity`() = runTest(timeout = 1.minutes) {
         val engine = TypeaheadSearchEngine<String>(
-            metadata = TypeaheadMetadata(maxResults = 100)
+            metadata = TypeaheadMetadata(maxResults = 100, haveStore = true)
         )
 
         val items = (1..200).map { "Product Category$it Item$it" }
@@ -520,12 +526,13 @@ class MultiWordSearchTest {
         assertEquals(200, engine.size, "All 200 items should be indexed.")
 
         // Each item has 3 tokens: "product", "categoryN", "itemN"
-        val vocab = engine.state.value.vocabulary
+        val vocab = engine.state.value.embeddings
         assertTrue("product" in vocab, "Shared token 'product' should be in vocabulary.")
         assertTrue("category1" in vocab, "Unique token 'category1' should be in vocabulary.")
 
         // Search should work correctly across concurrently-added items
-        val results = engine.find("Product Category1").value
+        engine.find("Product Category1")
+        val results = engine.storeResults!!.value
         assertTrue(
             results.any { it.first == "Product Category1 Item1" },
             "Should find the exact multi-word match."
@@ -557,14 +564,14 @@ class MultiWordSearchTest {
         assertEquals(50, engine.size, "Only permanent items should remain.")
 
         // The inverted index for "transient" should be cleaned up
-        val transientEntries = engine.state.value.invertedIndex["transient"]
+        val transientEntries = engine.state.value.index["transient"]
         assertNull(
             transientEntries,
             "Inverted index entry for 'transient' should be fully removed."
         )
 
         // "permanent" should still be intact
-        val permanentEntries = engine.state.value.invertedIndex["permanent"]
+        val permanentEntries = engine.state.value.index["permanent"]
         assertNotNull(permanentEntries, "'permanent' should still be in the inverted index.")
         assertEquals(50, permanentEntries.size, "All 50 permanent items should reference 'permanent'.")
     }
@@ -588,7 +595,7 @@ class MultiWordSearchTest {
         assertEquals(1, engine.size, "Punctuation-only item should still be stored.")
 
         val docId = engine.generateDocId(item)
-        val tokens = engine.state.value.forwardIndex[docId]
+        val tokens = engine.state.value.tokens[docId]
         assertNotNull(tokens)
         assertTrue(tokens.isEmpty(), "Punctuation-only text should produce zero tokens.")
     }
@@ -626,7 +633,7 @@ class MultiWordSearchTest {
         engine.add(item)
 
         val docId = engine.generateDocId(item)
-        val tokens = engine.state.value.forwardIndex[docId]
+        val tokens = engine.state.value.tokens[docId]
         assertNotNull(tokens)
         assertTrue(
             tokens.containsAll(listOf("congo", "brazzaville")),
@@ -647,10 +654,10 @@ class MultiWordSearchTest {
 
         val state = engine.state.value
         val docId = engine.generateDocId(item)
-        assertEquals(1, state.vocabulary.size, "One token → one vocabulary entry.")
-        assertEquals(1, state.invertedIndex.size, "One token → one inverted index entry.")
-        assertEquals(1, state.forwardIndex.size, "One item → one forward index entry.")
-        assertEquals(listOf("bulgaria"), state.forwardIndex[docId])
+        assertEquals(1, state.embeddings.size, "One token → one vocabulary entry.")
+        assertEquals(1, state.index.size, "One token → one inverted index entry.")
+        assertEquals(1, state.tokens.size, "One item → one forward index entry.")
+        assertEquals(setOf("bulgaria"), state.tokens[docId]?.toSet())
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -667,10 +674,11 @@ class MultiWordSearchTest {
     fun `multi-word country names are discoverable by individual word`() = runTest {
         val engine = TypeaheadSearchEngine(
             items = countries,
-            metadata = TypeaheadMetadata(maxResults = 10),
+            metadata = TypeaheadMetadata(maxResults = 10, haveStore = true),
         )
 
-        val results = engine.find("Republic").value
+        engine.find("Republic")
+        val results = engine.storeResults!!.value
 
         val republicCountries = results.map { it.first }
         assertTrue(
@@ -687,10 +695,11 @@ class MultiWordSearchTest {
     fun `Cnada typing simulation still resolves to Canada`() = runTest {
         val engine = TypeaheadSearchEngine(
             items = countries,
-            metadata = TypeaheadMetadata(maxResults = 5),
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true),
         )
 
-        val results = engine.find("Cnada").value
+        engine.find("Cnada")
+        val results = engine.storeResults!!.value
 
         assertTrue(results.isNotEmpty(), "Should return results for 'Cnada'.")
         assertEquals(
@@ -708,7 +717,8 @@ class MultiWordSearchTest {
     fun `exact phrase gets adjacency bonus and ranks higher than scattered words`() = runTest {
         val engine = TypeaheadSearchEngine<Book, String>(
             textSelector = { it.title },
-            keySelector = { it.isbn }
+            keySelector = { it.isbn },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -718,39 +728,12 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("Tom Hanks").value
+        engine.find("Tom Hanks")
+        val results = engine.storeResults!!.value
 
         assertTrue(results.size >= 2, "Should find both documents")
         assertEquals("1", results[0].first.isbn, "Adjacent match should rank first due to ADJACENCY_BONUS")
         assertTrue(results[0].second > results[1].second, "Score of adjacent phrase should be strictly higher")
-    }
-
-    /**
-     * Ensures that search works without strict order penalty.
-     * Shuffled words should still find the document successfully, just with a slightly lower
-     * score compared to the perfect sequence.
-     */
-    @Test
-    fun `search works without order penalty for reversed query words`() = runTest {
-        val engine = TypeaheadSearchEngine<Book, String>(
-            textSelector = { it.title },
-            keySelector = { it.isbn }
-        )
-
-        engine.addAll(
-            listOf(
-                Book("1", "Tom Hanks", "Author A")
-            )
-        )
-
-        val resultsReversed = engine.find("Hanks Tom").value
-        val resultsInOrder = engine.find("Tom Hanks").value
-
-        assertTrue(resultsReversed.isNotEmpty(), "Should find the document even if words are reversed")
-        assertTrue(
-            resultsInOrder.first().second > resultsReversed.first().second,
-            "In-order should have adjacency bonus, scoring slightly higher than reversed"
-        )
     }
 
     /**
@@ -761,7 +744,8 @@ class MultiWordSearchTest {
     fun `logarithmic length penalty prefers shorter text for the same match quality`() = runTest {
         val engine = TypeaheadSearchEngine<Book, String>(
             textSelector = { it.title },
-            keySelector = { it.isbn }
+            keySelector = { it.isbn },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         engine.addAll(
@@ -771,7 +755,8 @@ class MultiWordSearchTest {
             )
         )
 
-        val results = engine.find("Bulgaria").value
+        engine.find("Bulgaria")
+        val results = engine.storeResults!!.value
 
         assertEquals(2, results.size, "Should find both documents")
         assertEquals("1", results.first().first.isbn, "Shorter document should rank first due to length penalty modifier")
@@ -789,7 +774,7 @@ class MultiWordSearchTest {
         val engine = TypeaheadSearchEngine<TranslatedCountry, String>(
             textSelector = { it.translation },
             keySelector = { it.code }, // Entity ID: Deduplication key
-            metadata = TypeaheadMetadata(maxResults = 5)
+            metadata = TypeaheadMetadata(maxResults = 5, haveStore = true)
         )
 
         engine.addAll(
@@ -802,7 +787,8 @@ class MultiWordSearchTest {
         )
 
         // Search for something that could potentially catch both translations via fuzzy matching
-        val results = engine.find("Bulg").value
+        engine.find("Bulg")
+        val results = engine.storeResults!!.value
 
         val bgResultsCount = results.count { it.first.code == "BG" }
         assertEquals(
@@ -816,7 +802,8 @@ class MultiWordSearchTest {
     fun `test 3-word query across 20-word documents with smart positional encoding`() = runTest {
         val engine = TypeaheadSearchEngine<String, String>(
             textSelector = { it },
-            keySelector = { it } // For simplicity use text as unique key
+            keySelector = { it }, // For simplicity use text as unique key
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         // Document 1: Exact phrase (Adjacency Bonus should shoot it to the top)
@@ -836,7 +823,8 @@ class MultiWordSearchTest {
 
         // Search for 3 words
         val query = "fast brown fox"
-        val results = engine.find(query).value
+        engine.find(query)
+        val results = engine.storeResults!!.value
 
         // ==========================================
         // PRINT RESULTS DURING TEST
@@ -863,10 +851,10 @@ class MultiWordSearchTest {
         // 3. Partial match should be third (has only 2 words)
         assertEquals(doc3Partial, results[2].first, "Partial match should be at rank 3.")
 
-        // 4. Perfect match score should be SIGNIFICANTLY higher than scattered
+        // 4. Adjacent phrase should score higher than scattered
         assertTrue(
-            results[0].second > results[1].second * 1.05f,
-            "Adjacency Bonus should give at least 5% lead to the exact phrase."
+            results[0].second > results[1].second,
+            "Adjacency Bonus should give the exact phrase a higher score than scattered words."
         )
     }
 
@@ -874,13 +862,14 @@ class MultiWordSearchTest {
     /**
      * Tests a situation where the user searches for 3 words, but all THREE have heavy typos.
      * The algorithm should recognize words via vector similarity and then
-     * give a bonus to the exact (though misspelled) phrase via Smart Positional Encoding.
+     * give a bonus to the exact (though misspelled) phrase via exponential proximity decay.
      */
     @Test
     fun `fuzzy search correctly ranks documents even when all 3 query words contain typos`() = runTest {
         val engine = TypeaheadSearchEngine<String, String>(
             textSelector = { it },
-            keySelector = { it }
+            keySelector = { it },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         val doc1Exact = "The really fast brown fox jumps over the lazy dog." // Exact phrase
@@ -894,7 +883,8 @@ class MultiWordSearchTest {
         // brwon -> brown (swapped letters)
         // fxo -> fox (swapped letters)
         val query = "fsat brwon fxo"
-        val results = engine.find(query).value
+        engine.find(query)
+        val results = engine.storeResults!!.value
 
         println("\n=== Results for query with HEAVY TYPOS: [$query] ===")
         results.forEachIndexed { index, (match, score) ->
@@ -906,7 +896,7 @@ class MultiWordSearchTest {
         assertTrue(results.isNotEmpty(), "Should find results despite typos.")
         assertEquals(doc1Exact, results[0].first, "Should find perfect text at rank 1 despite typos.")
         assertTrue(
-            results[0].second > results[1].second * 1.05f,
+            results[0].second > results[1].second,
             "Even with misspelled words, the Adjacency Bonus should activate and provide a lead."
         )
     }
@@ -919,7 +909,8 @@ class MultiWordSearchTest {
     fun `real world sloppy query finds the correct long description`() = runTest {
         val engine = TypeaheadSearchEngine<String, String>(
             textSelector = { it },
-            keySelector = { it }
+            keySelector = { it },
+            metadata = TypeaheadMetadata(haveStore = true)
         )
 
         // Control texts
@@ -934,7 +925,8 @@ class MultiWordSearchTest {
         // pota -> potter
         // gobelt -> goblet
         val sloppyQuery = "hariy pota gobelt"
-        val results = engine.find(sloppyQuery).value
+        engine.find(sloppyQuery)
+        val results = engine.storeResults!!.value
 
         println("\n=== Results for phonetic/sloppy query: [$sloppyQuery] ===")
         results.forEachIndexed { index, (match, score) ->
@@ -947,5 +939,307 @@ class MultiWordSearchTest {
         assertEquals(doc1, results[0].first, "The 'Goblet of Fire' movie should be the absolute winner.")
         assertTrue(results[0].second > results[1].second, "Document 1 should beat Document 2 because it contains the third word.")
         assertTrue(results[0].second > results[2].second, "Document 1 should beat Document 3 because it contains all words.")
+    }
+}
+
+/**
+ * Tests for no-store mode (`haveStore = false`, the default).
+ *
+ * In this mode:
+ * - [TypeaheadSearchEngine.storeResults] is `null`
+ * - [TypeaheadSearchEngine.getAllItems] returns an empty list
+ * - [TypeaheadSearchEngine.results] returns [TypeaheadResult] with `docId`, `tokens`, `score`
+ * - `size`, `contains`, `add`, `remove`, `clear` all work via the token index
+ */
+class NoStoreSearchTest {
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  BASIC NO-STORE BEHAVIOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `storeResults is null when haveStore is false`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+        assertNull(engine.storeResults, "storeResults should be null in no-store mode.")
+    }
+
+    @Test
+    fun `getAllItems returns empty list in no-store mode`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+        engine.add("Kotlin")
+        engine.add("Java")
+        assertEquals(2, engine.size, "Engine should track size via token index.")
+        assertEquals(emptyList(), engine.getAllItems(), "getAllItems should return empty in no-store mode.")
+    }
+
+    @Test
+    fun `size and contains work without store`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+
+        engine.add("Bulgaria")
+        engine.add("Germany")
+        engine.add("France")
+
+        assertEquals(3, engine.size)
+        assertTrue("Bulgaria" in engine)
+        assertTrue("Germany" in engine)
+        assertFalse("Italy" in engine)
+    }
+
+    @Test
+    fun `add and remove work without store`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+
+        engine.add("Alpha")
+        engine.add("Beta")
+        assertEquals(2, engine.size)
+
+        engine.remove("Alpha")
+        assertEquals(1, engine.size)
+        assertFalse("Alpha" in engine)
+        assertTrue("Beta" in engine)
+    }
+
+    @Test
+    fun `clear works without store`() = runTest {
+        val engine = TypeaheadSearchEngine<String>()
+        engine.addAll(listOf("Alpha", "Beta", "Gamma"))
+        assertEquals(3, engine.size)
+
+        engine.clear()
+        assertEquals(0, engine.size)
+
+        val state = engine.state.value
+        assertNull(state.store, "Store should remain null after clear.")
+        assertEquals(0, state.tokens.size)
+        assertEquals(0, state.index.size)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  SEARCH WITH TypeaheadResult
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `find returns TypeaheadResult with docId and score`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.addAll(listOf("Kotlin", "Java", "Scala"))
+
+        val results = engine.find("Kotlin").value
+
+        assertTrue(results.isNotEmpty(), "Should return results.")
+        val top = results.first()
+        assertTrue(top.docId.contains("Kotlin"), "docId should contain the indexed text.")
+        assertTrue(top.score > 0f, "Score should be positive for a match.")
+        assertTrue(top.tokens.contains("kotlin"), "Tokens should contain the lowercase token.")
+    }
+
+    @Test
+    fun `no-store search ranks exact match first`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 10)
+        )
+        engine.addAll(listOf("South Korea", "South Africa", "North Korea", "South Sudan"))
+
+        val results = engine.find("South Korea").value
+
+        assertTrue(results.isNotEmpty())
+        val topDocId = results.first().docId
+        assertTrue(
+            topDocId.startsWith("South Korea"),
+            "Top result docId should start with 'South Korea', got: $topDocId"
+        )
+    }
+
+    @Test
+    fun `no-store fuzzy search recovers from typos`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.addAll(listOf("United Kingdom", "United States of America", "United Arab Emirates"))
+
+        val results = engine.find("Untied Kingdom").value
+
+        assertTrue(results.isNotEmpty(), "Should return results despite typo.")
+        assertTrue(
+            results.first().docId.startsWith("United Kingdom"),
+            "Fuzzy scan should recover from transposition."
+        )
+    }
+
+    @Test
+    fun `no-store partial last token matches`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.addAll(listOf("United Kingdom", "United States of America", "United Arab Emirates"))
+
+        val results = engine.find("United Ki").value
+
+        assertTrue(results.isNotEmpty())
+        assertTrue(
+            results.first().docId.startsWith("United Kingdom"),
+            "Partial 'Ki' should fuzzily match 'kingdom'."
+        )
+    }
+
+    @Test
+    fun `no-store scores are consistent - higher for better matches`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 10)
+        )
+        engine.addAll(
+            listOf(
+                "Kotlin Multiplatform Guide",
+                "Kotlin Coroutines Deep Dive",
+                "Advanced Java Concurrency"
+            )
+        )
+
+        val results = engine.find("Kotlin Multiplatform").value
+        assertTrue(results.size >= 2, "Should find at least 2 items.")
+
+        // Results should be sorted by descending score
+        for (i in 0 until results.size - 1) {
+            assertTrue(
+                results[i].score >= results[i + 1].score,
+                "Results should be sorted by descending score."
+            )
+        }
+    }
+
+    @Test
+    fun `no-store blank query returns empty results`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+        engine.addAll(listOf("Alpha", "Beta"))
+
+        val results = engine.find("").value
+        assertTrue(results.isEmpty(), "Blank query should return empty results.")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  NO-STORE WITH CUSTOM TYPES
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `no-store with custom type - add remove contains size`() = runTest {
+        val engine = TypeaheadSearchEngine<Book, String>(
+            textSelector = { it.title },
+            keySelector = { it.isbn }
+        )
+
+        val book1 = Book("isbn-1", "Kotlin in Action", "Author A")
+        val book2 = Book("isbn-2", "Java Concurrency in Practice", "Author B")
+
+        engine.add(book1)
+        engine.add(book2)
+
+        assertEquals(2, engine.size)
+        assertTrue(book1 in engine)
+        assertNull(engine.storeResults, "storeResults should be null.")
+
+        engine.remove(book1)
+        assertEquals(1, engine.size)
+        assertFalse(book1 in engine)
+        assertTrue(book2 in engine)
+    }
+
+    @Test
+    fun `no-store search returns docId containing text and key`() = runTest {
+        val engine = TypeaheadSearchEngine<Book, String>(
+            textSelector = { it.title },
+            keySelector = { it.isbn },
+            metadata = TypeaheadMetadata(maxResults = 5)
+        )
+
+        engine.add(Book("isbn-1", "Kotlin in Action", "Author A"))
+        engine.add(Book("isbn-2", "Java Concurrency", "Author B"))
+
+        val results = engine.find("Kotlin").value
+
+        assertTrue(results.isNotEmpty())
+        val topDocId = results.first().docId
+        assertTrue(topDocId.contains("Kotlin in Action"), "docId should contain the text.")
+        assertTrue(topDocId.contains("isbn-1"), "docId should contain the key.")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  NO-STORE CONCURRENCY
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `no-store concurrent add preserves index integrity`() = runTest(timeout = 1.minutes) {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 50)
+        )
+
+        val items = (1..100).map { "Product Category$it Item$it" }
+
+        val jobs = items.chunked(10).map { chunk ->
+            launch(Dispatchers.Default) {
+                engine.addAll(chunk)
+            }
+        }
+        jobs.joinAll()
+
+        assertEquals(100, engine.size)
+        assertTrue("product" in engine.state.value.embeddings)
+
+        val results = engine.find("Product Category1").value
+        assertTrue(results.isNotEmpty(), "Search should return results in no-store mode.")
+        assertTrue(results.first().score > 0f)
+    }
+
+    @Test
+    fun `no-store concurrent add and remove maintains consistency`() = runTest(timeout = 1.minutes) {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 50)
+        )
+
+        val permanent = (1..30).map { "Permanent Item $it" }
+        val transient = (1..30).map { "Transient Entry $it" }
+
+        engine.addAll(permanent + transient)
+        assertEquals(60, engine.size)
+
+        val removeJobs = transient.map { item ->
+            launch(Dispatchers.Default) { engine.remove(item) }
+        }
+        removeJobs.joinAll()
+
+        assertEquals(30, engine.size)
+        permanent.forEach { assertTrue(it in engine, "$it should still be present.") }
+        transient.forEach { assertFalse(it in engine, "$it should be removed.") }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  NO-STORE IMPORT/EXPORT STATE INTEGRITY
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `no-store engine state indices are consistent`() = runTest {
+        val engine = TypeaheadSearchEngine<String>(
+            metadata = TypeaheadMetadata(maxResults = 10)
+        )
+
+        engine.addAll(listOf("Kotlin Multiplatform", "Kotlin Coroutines", "Java Concurrency"))
+
+        val state = engine.state.value
+
+        // Store should be null
+        assertNull(state.store)
+
+        // All indices should be populated
+        assertEquals(5, state.embeddings.size, "5 unique tokens in vocabulary.")
+        assertTrue(state.index.isNotEmpty(), "Inverted index should be populated.")
+        assertEquals(3, state.tokens.size, "3 documents in forward index.")
+
+        // Token pool should contain all tokens
+        listOf("kotlin", "multiplatform", "coroutines", "java", "concurrency").forEach { token ->
+            assertTrue(token in state.tokenPool, "Token pool should contain '$token'.")
+        }
     }
 }

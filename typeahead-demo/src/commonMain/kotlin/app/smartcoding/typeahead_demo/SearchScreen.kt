@@ -45,7 +45,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExpandedDockedSearchBar
 import androidx.compose.material3.ExpandedFullScreenSearchBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -69,6 +68,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,16 +80,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun SearchScreen(
     modifier: Modifier = Modifier
 ) {
     val viewModel = viewModel<SearchViewModel>()
-    val filteredResults by viewModel.results.collectAsState()
+    val results by viewModel.results.collectAsState()
 
     var selectedIndex by remember { mutableStateOf(-1) }
     val options = listOf("Movies 86k", "Import File").withIndex().toList()
@@ -100,12 +98,11 @@ fun SearchScreen(
 
     var searchBarPlaceholder by remember { mutableStateOf("") }
 
-
-    LaunchedEffect(viewModel.queryState.text) {
-        listState.scrollToItem(0)
+    LaunchedEffect(results) {
+        launch { listState.scrollToItem(0) }
     }
 
-    LaunchedEffect(viewModel.isLoading) {
+    remember(viewModel.isLoading) {
         searchBarPlaceholder = if (viewModel.isLoading)
             "Search is live — results update as data loads"
         else
@@ -312,7 +309,7 @@ fun SearchScreen(
                         state = listState,
                         contentPadding = PaddingValues(16.dp),
                     ) {
-                        if (filteredResults.isEmpty() && viewModel.queryState.text.isNotEmpty()) {
+                        if (results.isEmpty() && viewModel.queryState.text.isNotEmpty()) {
                             item {
                                 Text(
                                     "No results found for \"${viewModel.queryState.text}\"",
@@ -322,7 +319,7 @@ fun SearchScreen(
                             }
                         } else {
                             items(
-                                items = filteredResults,
+                                items = results,
                                 key = { it.first }
                             ) { (result, score) ->
                                 ListItem(
@@ -336,7 +333,7 @@ fun SearchScreen(
                                         }
                                     ),
                                     headlineContent = {
-                                        val heatmap = viewModel.getHeatmap(result.second)
+                                        val heatmap = viewModel.getHeatmap(result)
                                         if (heatmap != null) {
                                             Heatmap(heatmap)
                                         } else {

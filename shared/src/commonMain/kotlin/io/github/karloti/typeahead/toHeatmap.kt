@@ -65,6 +65,101 @@ import kotlin.math.min
  *         - [TypeaheadSearchEngine.Companion.TIER_TERTIARY] (2): Scattered single-character match.
  *         - [TypeaheadSearchEngine.Companion.TIER_NONE] (-1): Unmatched character (default).
  */
+/**
+ * A token annotated with its character offsets in the original (pre-lowercased) text.
+ *
+ * @property token  The lowercase-normalised token string.
+ * @property startIndex Inclusive start offset in the source text.
+ * @property endIndex   Exclusive end offset in the source text.
+ */
+internal data class PositionedToken(
+    val token: Token,
+    val startIndex: Int,
+    val endIndex: Int
+)
+
+/**
+ * Splits [text] into [PositionedToken]s using the complement of the given separator regex,
+ * preserving the exact character offsets of every word-like run.
+ *
+ * For the default `tokenizeRegexString = "[^\p{L}\d]+"`, this finds every maximal run of
+ * Unicode letters / digits and records its `(lowercased token, start, end)`.
+ */
+internal fun tokenizeWithOffsets(
+    text: String,
+    tokenizeRegexString: String
+): List<PositionedToken> {
+    val separatorRegex = Regex(tokenizeRegexString)
+    val result = mutableListOf<PositionedToken>()
+    var cursor = 0
+    for (sep in separatorRegex.findAll(text)) {
+        if (cursor < sep.range.first) {
+            val word = text.substring(cursor, sep.range.first)
+            val token = word.trim().lowercase()
+            if (token.isNotEmpty()) {
+                result.add(PositionedToken(token, cursor, sep.range.first))
+            }
+        }
+        cursor = sep.range.last + 1
+    }
+    if (cursor < text.length) {
+        val word = text.substring(cursor)
+        val token = word.trim().lowercase()
+        if (token.isNotEmpty()) {
+            result.add(PositionedToken(token, cursor, text.length))
+        }
+    }
+    return result
+}
+
+/**
+ * Assembles a character-level heatmap for the full [targetText] from a list of
+ * already-matched `(queryToken, targetToken)` pairs produced by the set-based
+ * matching algorithm in [TypeaheadSearchEngine.heatmap].
+ *
+ * For each matched pair the existing single-word [String.toHeatmap] is called to
+ * produce per-character tiers, then those tiers are written into the correct offsets
+ * of the output array.  Characters that belong to unmatched tokens or to separators
+ * (spaces, punctuation) remain [TypeaheadSearchEngine.TIER_NONE].
+ *
+ * @param matchedPairs  Ordered list of `((queryToken, targetToken), score)`.
+ * @param targetText    The original (non-lowercased) candidate string.
+ * @param targetTokensWithOffsets  Positional mapping produced by [tokenizeWithOffsets].
+ * @param ignoreCase    Forwarded to [String.toHeatmap].
+ * @return A [List] of `(Char, tier)` pairs with exactly `targetText.length` entries.
+ */
+internal fun toTokenizedHeatmap(
+    matchedPairs: List<Pair<Pair<Token, Token>, Float>>,
+    targetText: String,
+    targetTokensWithOffsets: List<PositionedToken>,
+    ignoreCase: Boolean = true
+): List<Pair<Char, Int>> {
+    val heatmapInts = IntArray(targetText.length) { TypeaheadSearchEngine.TIER_NONE }
+
+    // Build a quick lookup: lowercase token → first PositionedToken with that token value
+    val offsetByToken = mutableMapOf<Token, PositionedToken>()
+    targetTokensWithOffsets.forEach { pt ->
+        if (!offsetByToken.containsKey(pt.token)) offsetByToken[pt.token] = pt
+    }
+
+    for ((pair, _) in matchedPairs) {
+        val (queryToken, targetToken) = pair
+        val positioned = offsetByToken[targetToken] ?: continue
+        val originalCaseWord = targetText.substring(positioned.startIndex, positioned.endIndex)
+
+        val wordHeatmap: List<Pair<Char, Int>> = queryToken.toHeatmap(
+            targetStr = originalCaseWord,
+            ignoreCase = ignoreCase
+        )
+
+        for ((localIndex, entry) in wordHeatmap.withIndex()) {
+            heatmapInts[positioned.startIndex + localIndex] = entry.second
+        }
+    }
+
+    return targetText.mapIndexed { index, ch -> ch to heatmapInts[index] }
+}
+
 fun String.toHeatmap(
     targetStr: String,
     ignoreCase: Boolean = true
