@@ -18,61 +18,20 @@
 
 package app.smartcoding.typeahead_demo
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExpandedFullScreenSearchBar
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
 import androidx.compose.material3.MaterialTheme.colorScheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults.InputField
-import androidx.compose.material3.SearchBarValue
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Text
-import androidx.compose.material3.rememberSearchBarState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -90,7 +49,7 @@ fun SearchScreen(
     val results by viewModel.results.collectAsState()
 
     var selectedIndex by remember { mutableStateOf(-1) }
-    val options = listOf("Movies 86k", "Import File").withIndex().toList()
+    val options = listOf("Countries", "Movies", "Import File").withIndex().toList()
 
     val listState = rememberLazyListState()
     val searchBarState = rememberSearchBarState()
@@ -117,12 +76,22 @@ fun SearchScreen(
             searchBarState = searchBarState,
             onSearch = { scope.launch { searchBarState.animateToCollapsed() } },
             placeholder = { Text(searchBarPlaceholder) },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            leadingIcon = {
+                if (searchBarState.currentValue == SearchBarValue.Expanded)
+                    IconButton(onClick = {
+                        scope.launch { searchBarState.animateToCollapsed() }
+                    }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                    }
+                else {
+                    Icon(Icons.Default.Search, contentDescription = null)
+                }
+
+            },
             trailingIcon = {
                 if (viewModel.queryState.text.isNotEmpty()) {
                     IconButton(onClick = {
                         viewModel.clearSearch()
-                        scope.launch { searchBarState.animateToCollapsed() }
                     }) {
                         Icon(Icons.Default.Clear, contentDescription = null)
                     }
@@ -217,11 +186,16 @@ fun SearchScreen(
                             selectedIndex = index
                             when (index) {
                                 0 -> viewModel.loadSource(
-                                    streamDemoFile("/movies.txt"),
+                                    streamDemoFile("/country.tsv"),
                                     expectedLines = 86_000
                                 )
 
-                                1 -> pickLocalFileAndStream { viewModel.loadSource(it) }
+                                1 -> viewModel.loadSource(
+                                    streamDemoFile("/movies.tsv"),
+                                    expectedLines = 194
+                                )
+
+                                2 -> pickLocalFileAndStream { viewModel.loadSource(it) }
                             }
                         },
                         selected = index == selectedIndex,

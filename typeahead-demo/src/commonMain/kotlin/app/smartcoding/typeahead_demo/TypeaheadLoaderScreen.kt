@@ -35,7 +35,7 @@ suspend fun Flow<String>.parse(
 
     typeaheadSearchEngine.addAll(this@parse) { line ->
         if (line.isNotBlank()) {
-            val idStr = line.takeWhile { !it.isWhitespace() }
+            val idStr = line.takeWhile { !it.isWhitespace() && it != ',' }
             if (idStr.isNotEmpty()) {
                 val title = line.drop(idStr.length + 1).trim()
                 loadedLinesCount.incrementAndFetch().let {
@@ -46,22 +46,6 @@ suspend fun Flow<String>.parse(
         } else "" to ""
     }
     isFinished()
-
-
-    /*
-        collect { line ->
-            if (line.isNotBlank()) {
-                val idStr = line.takeWhile { it.isDigit() }
-                if (idStr.isNotEmpty()) {
-                    val title = line.drop(idStr.length + 1).trim()
-                    typeaheadSearchEngine.add(idStr.toInt() to title)
-                    loadedLinesCount++
-                    if (loadedLinesCount % 1000 == 0) loadedLinesCount(loadedLinesCount)
-                }
-            }
-        }
-    */
-
     loadedLinesCount(loadedLinesCount.load())
     isFinished()
 }

@@ -25,7 +25,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import io.github.karloti.typeahead.TypeaheadResult
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
@@ -55,10 +54,6 @@ class SearchViewModel(
 
     val results: StateFlow<List<Pair<Pair<String, String>, Float>>> =
         engine.storeResults ?: MutableStateFlow(emptyList())
-
-//    val storeResults: StateFlow<List<Pair<Pair<String, String>, Float>>>? = engine.storeResults
-//    val results: StateFlow<List<TypeaheadResult>> = engine.results
-
 
     private var loadJob: Job? = null
 
