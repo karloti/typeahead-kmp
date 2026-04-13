@@ -18,7 +18,7 @@ across thousands of movie descriptions works just as naturally as searching for 
 yields a normalized similarity score in `[0.0, 1.0]` while gracefully handling skipped characters, swapped letters,
 and phonetic typos.
 
-![Try the Live Demo](assets/movies.gif)
+[![Try the Live Demo](assets/movies.gif)](https://typeahead-demo.smartcoding.app)
 > **[Try the Live Demo](https://typeahead-demo.smartcoding.app)** — See the engine in action. Load a dataset, start typing (even with typos), and watch results update in real time as data is still being indexed.
 
 ---
