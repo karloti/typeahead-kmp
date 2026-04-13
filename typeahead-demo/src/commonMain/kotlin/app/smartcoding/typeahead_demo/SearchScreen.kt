@@ -187,12 +187,12 @@ fun SearchScreen(
                             when (index) {
                                 0 -> viewModel.loadSource(
                                     streamDemoFile("/country.tsv"),
-                                    expectedLines = 86_000
+                                    expectedLines = 194
                                 )
 
                                 1 -> viewModel.loadSource(
                                     streamDemoFile("/movies.tsv"),
-                                    expectedLines = 194
+                                    expectedLines = 86_000
                                 )
 
                                 2 -> pickLocalFileAndStream { viewModel.loadSource(it) }

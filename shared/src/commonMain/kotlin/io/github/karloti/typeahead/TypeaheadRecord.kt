@@ -65,8 +65,7 @@ sealed interface TypeaheadRecord<out T> {
      * @property floatingWeight The weight for floating N-gram matching. Defaults to 1.0.
      * @property charBagWeight The weight for character bag features (position-independent character composition).
      *   Captures overall character similarity so that strings differing by 1-2 insertions/deletions
-     *   share most features (e.g., "дейсън" vs "джейсън" share 6/7 character bag features).
-     *   `0.0` = disabled. Defaults to 20.0.
+     *   share most features. `0.0` = disabled. Defaults to 20.0.
      * @property maxResults The maximum number of results to return from a search query. Defaults to 5.
      * @property topKVocab The number of top vocabulary matches to consider per query token during the fuzzy vocabulary scan. Defaults to 50.
      * @property adjacencyBonus Proximity penalty weight controlling how much token distance affects scoring.
