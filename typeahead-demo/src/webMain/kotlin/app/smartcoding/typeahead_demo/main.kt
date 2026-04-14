@@ -44,10 +44,10 @@ fun main() {
         metadata = TypeaheadRecord.TypeaheadMetadata(
             maxResults = 10,
             haveStore = true,
-            adjacencyBonus = 0.3f,
-            charBagWeight = 40f,
+//            adjacencyBonus = 0.3f,
+//            charBagWeight = 40f,
             topKVocab = 5,
-            prefixWeight = 4f
+//            prefixWeight = 4f
         ),
         textSelector = Pair<String, String>::second,
         keySelector = Pair<String, String>::first,

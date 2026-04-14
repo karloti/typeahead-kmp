@@ -96,7 +96,7 @@ class MultiWordSearchTest {
     }
 
     /**
-     * Verifies that [TypeaheadSearchEngine.EngineState.index] records the minimum position
+     * Verifies that [TypeaheadSearchEngine.EngineState.indexInDocId] records the minimum position
      * for each token within an item's deduplicated token set. For "New York New Jersey",
      * the deduplicated set is {"new", "york", "jersey"} with positions 0, 1, 2.
      */
@@ -110,7 +110,7 @@ class MultiWordSearchTest {
         engine.add(item)
 
         val docId = engine.generateDocId(item)
-        val inverted = engine.state.value.index
+        val inverted = engine.state.value.indexInDocId
 
         val newPosition = inverted["new"]?.get(docId)
         assertNotNull(newPosition, "Inverted index should contain a position for 'new'.")
@@ -142,7 +142,7 @@ class MultiWordSearchTest {
 
         engine.remove(item1)
 
-        val inverted = engine.state.value.index
+        val inverted = engine.state.value.indexInDocId
         val docId1 = engine.generateDocId(item1)
         val docId2 = engine.generateDocId(item2)
 
@@ -462,7 +462,7 @@ class MultiWordSearchTest {
 
         val state = engine.state.value
         assertEquals(0, state.embeddings.size, "Vocabulary should be empty after clear.")
-        assertEquals(0, state.index.size, "Inverted index should be empty after clear.")
+        assertEquals(0, state.indexInDocId.size, "Inverted index should be empty after clear.")
         assertEquals(0, state.tokens.size, "Forward index should be empty after clear.")
         assertEquals(0, state.store?.size ?: 0, "Document store should be empty after clear.")
 
@@ -564,14 +564,14 @@ class MultiWordSearchTest {
         assertEquals(50, engine.size, "Only permanent items should remain.")
 
         // The inverted index for "transient" should be cleaned up
-        val transientEntries = engine.state.value.index["transient"]
+        val transientEntries = engine.state.value.indexInDocId["transient"]
         assertNull(
             transientEntries,
             "Inverted index entry for 'transient' should be fully removed."
         )
 
         // "permanent" should still be intact
-        val permanentEntries = engine.state.value.index["permanent"]
+        val permanentEntries = engine.state.value.indexInDocId["permanent"]
         assertNotNull(permanentEntries, "'permanent' should still be in the inverted index.")
         assertEquals(50, permanentEntries.size, "All 50 permanent items should reference 'permanent'.")
     }
@@ -655,7 +655,7 @@ class MultiWordSearchTest {
         val state = engine.state.value
         val docId = engine.generateDocId(item)
         assertEquals(1, state.embeddings.size, "One token → one vocabulary entry.")
-        assertEquals(1, state.index.size, "One token → one inverted index entry.")
+        assertEquals(1, state.indexInDocId.size, "One token → one inverted index entry.")
         assertEquals(1, state.tokens.size, "One item → one forward index entry.")
         assertEquals(setOf("bulgaria"), state.tokens[docId]?.toSet())
     }
@@ -1012,7 +1012,7 @@ class NoStoreSearchTest {
         val state = engine.state.value
         assertNull(state.store, "Store should remain null after clear.")
         assertEquals(0, state.tokens.size)
-        assertEquals(0, state.index.size)
+        assertEquals(0, state.indexInDocId.size)
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1234,7 +1234,7 @@ class NoStoreSearchTest {
 
         // All indices should be populated
         assertEquals(5, state.embeddings.size, "5 unique tokens in vocabulary.")
-        assertTrue(state.index.isNotEmpty(), "Inverted index should be populated.")
+        assertTrue(state.indexInDocId.isNotEmpty(), "Inverted index should be populated.")
         assertEquals(3, state.tokens.size, "3 documents in forward index.")
 
         // Token pool should contain all tokens

@@ -42,7 +42,6 @@ import kotlinx.serialization.json.io.encodeToSink
 import kotlinx.serialization.serializer
 import kotlin.collections.forEachIndexed
 import kotlin.collections.mutableMapOf
-
 import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.min
@@ -87,9 +86,9 @@ class TypeaheadSearchEngine<T, K>(
 ) : TypeaheadSearch<T, K> {
 
     @PublishedApi
-    internal var typeaheadMetadata: TypeaheadMetadata = metadata
+    internal var _metadata: TypeaheadMetadata = metadata
     val metadata: TypeaheadMetadata
-        get() = typeaheadMetadata
+        get() = _metadata
 
     /**
      * Atomic wrapper that keeps all indices in lock-step.
@@ -106,9 +105,9 @@ class TypeaheadSearchEngine<T, K>(
      * @property tokenPool Canonicalization pool: maps a raw lowercase String to its canonical
      *           [Token] instance. Guarantees that every other field in this state references
      *           the **same** underlying String heap object for any given token value,
-     *           eliminating String duplication across [embeddings], [index], and [tokens].
+     *           eliminating String duplication across [embeddings], [indexInDocId], and [tokens].
      * @property embeddings Flyweight cache: maps a unique lowercase token to its [SparseVector].
-     * @property index Maps a vocabulary token → docId → earliest position in that doc.
+     * @property indexInDocId Maps a vocabulary token → docId → earliest position in that doc.
      * @property tokens Maps a docId to the persistent set of tokens that compose its text.
      * @property store Maps a docId to the user's domain object [T], accessed only
      *           once per matching document when building the final result list.
@@ -118,7 +117,7 @@ class TypeaheadSearchEngine<T, K>(
     internal data class EngineState<T>(
         val tokenPool: PersistentMap<String, Token> = persistentHashMapOf(),
         val embeddings: PersistentMap<Token, SparseVector> = persistentHashMapOf(),
-        val index: PersistentMap<Token, PersistentMap<DocId, Int>> = persistentHashMapOf(),
+        val indexInDocId: PersistentMap<Token, PersistentMap<DocId, Int>> = persistentHashMapOf(),
         val tokens: PersistentMap<DocId, PersistentSet<Token>> = persistentHashMapOf(),
         val store: PersistentMap<DocId, T>?,
     )
@@ -137,7 +136,7 @@ class TypeaheadSearchEngine<T, K>(
     private val _query = MutableStateFlow<String?>(null)
     val query: StateFlow<String?> = _query.asStateFlow()
 
-    /** Cached query-token vectors from the most recent [performBaseSearch]. */
+    /** Cached query-token vectors from the most recent [performSearch]. */
     private var _lastQueryVectors: Map<Token, SparseVector> = emptyMap()
 
     private val scope = CoroutineScope(defaultDispatcher + SupervisorJob())
@@ -155,7 +154,7 @@ class TypeaheadSearchEngine<T, K>(
 
     private suspend fun updateSearch(query: String) {
         val snapshot = state.value
-        val base = performBaseSearch(query, snapshot)
+        val base = performSearch(query, snapshot)
         _results.value = base
         val currentStore = snapshot.store
         if (currentStore != null) {
@@ -165,7 +164,7 @@ class TypeaheadSearchEngine<T, K>(
         }
     }
 
-    private suspend fun performBaseSearch(
+    private suspend fun performSearch(
         query: String,
         currentState: EngineState<T> = state.value,
     ): List<TypeaheadResult> = withContext(defaultDispatcher) {
@@ -193,7 +192,7 @@ class TypeaheadSearchEngine<T, K>(
                 async {
                     val qVector = queryVectors[q]
                     val cpq = ConcurrentPriorityQueue(
-                        maxSize = typeaheadMetadata.topKVocab,
+                        maxSize = _metadata.topKVocab,
                         dispatcher = defaultDispatcher,
                         comparator = compareByDescending(Pair<Token, Float>::second),
                         keySelector = Pair<Token, Float>::first
@@ -211,7 +210,7 @@ class TypeaheadSearchEngine<T, K>(
             val docIds = mutableSetOf<DocId>()
             for (deferred in topKJobs) {
                 for (vocabToken in deferred.await()) {
-                    currentState.index[vocabToken]?.keys?.let { docIds.addAll(it) }
+                    currentState.indexInDocId[vocabToken]?.keys?.let { docIds.addAll(it) }
                 }
             }
             docIds
@@ -259,7 +258,7 @@ class TypeaheadSearchEngine<T, K>(
         // ── Phase 2: Score candidates via cached lookups + harmonic mean ──
 
         val topResultsQueue = ConcurrentPriorityQueue(
-            maxSize = typeaheadMetadata.maxResults,
+            maxSize = _metadata.maxResults,
             dispatcher = defaultDispatcher,
             comparator = compareByDescending(TypeaheadResult::score),
             keySelector = { it: TypeaheadResult -> it.docId.substringAfter('\u0000') }
@@ -286,7 +285,7 @@ class TypeaheadSearchEngine<T, K>(
 
                     matchScores[q] = bestScore
                     if (bestScore > 0f && bestMatchToken != null) {
-                        val pos = currentState.index[bestMatchToken]?.get(docId) ?: -1
+                        val pos = currentState.indexInDocId[bestMatchToken]?.get(docId) ?: -1
                         if (pos >= 0) matchPositions.add(pos)
                     }
                 }
@@ -318,12 +317,13 @@ class TypeaheadSearchEngine<T, K>(
                         val maxDecay = (matchPositions.size - 1) * 0.5f // all adjacent
                         totalDecay / maxDecay // normalised to (0, 1]
                     }
+
                     matchPositions.size == 1 && tokenCount > 1 -> 0f
                     else -> 1.0f // single token → proximity n/a
                 }
 
                 val proximityFactor =
-                    1.0f - typeaheadMetadata.adjacencyBonus * (1.0f - proximityRatio)
+                    1.0f - _metadata.adjacencyBonus * (1.0f - proximityRatio)
 
                 // BM25-inspired document-length penalty.
                 val logDocLength = log10(docTokens.size.toFloat().coerceAtLeast(1f))
@@ -404,18 +404,18 @@ class TypeaheadSearchEngine<T, K>(
      *    tokens positioned near each other over high-cosine but distant matches.
      *
      * 3. **Per-word colouring** — for every matched `(queryToken, docToken)` pair
-     *    the existing [String.toHeatmap] is called on the original-case word span,
+     *    the existing [toHeatmap] is called on the original-case word span,
      *    and the resulting tier values are written into the correct character offsets.
      *
      * @param docId The composite document identifier (as stored in [TypeaheadResult.docId]).
-     * @param ignoreCase Forwarded to the per-word [String.toHeatmap] calls.
+     * @param ignoreCase Forwarded to the per-word [toHeatmap] calls.
      * @return A [List] of `(Char, tier)` pairs with exactly as many entries as the
      *         human-readable portion of [docId], or `null` if no query is active or
      *         the document is not indexed.
      */
     fun heatmap(
         docId: DocId,
-        ignoreCase: Boolean = typeaheadMetadata.ignoreCase
+        ignoreCase: Boolean = _metadata.ignoreCase
     ): List<Pair<Char, Int>>? {
         val currentQuery = _query.value ?: return null
         val snapshot = state.value
@@ -440,7 +440,7 @@ class TypeaheadSearchEngine<T, K>(
         // Collect positions of exact-matched tokens for proximity context
         val exactPositions = mutableListOf<Int>()
         for ((pair, _) in exactMatches) {
-            val pos = snapshot.index[pair.first]?.get(docId) ?: -1
+            val pos = snapshot.indexInDocId[pair.first]?.get(docId) ?: -1
             if (pos >= 0) exactPositions.add(pos)
         }
 
@@ -451,7 +451,7 @@ class TypeaheadSearchEngine<T, K>(
             fuzzyMatches = emptyList()
         } else {
             // For each query token, find top-K doc token candidates by cosine
-            val topK = 5
+            val topK = _metadata.topKVocab
             val candidates = Array(fuzzyQueryTokens.size) { q ->
                 val qVec = queryEmbeddings[fuzzyQueryTokens[q]]
                 if (qVec == null) {
@@ -462,7 +462,7 @@ class TypeaheadSearchEngine<T, K>(
                         val dVec = snapshot.embeddings[tToken] ?: continue
                         val score = qVec dotProduct dVec
                         if (score > 0f) {
-                            val pos = snapshot.index[tToken]?.get(docId) ?: -1
+                            val pos = snapshot.indexInDocId[tToken]?.get(docId) ?: -1
                             scored.add(Triple(tToken, score, pos))
                         }
                     }
@@ -503,7 +503,7 @@ class TypeaheadSearchEngine<T, K>(
                             totalDecay += 1f / (1 shl (gap + 1))
                         }
                         val maxDecay = (sorted.size - 1) * 0.5f
-                        1f - typeaheadMetadata.adjacencyBonus * (1f - totalDecay / maxDecay)
+                        1f - _metadata.adjacencyBonus * (1f - totalDecay / maxDecay)
                     } else 1f
 
                     val combined = cosineComponent * proximityFactor
@@ -537,7 +537,7 @@ class TypeaheadSearchEngine<T, K>(
 
         // ── Phase 3: Assemble and colour ──
         val allMatches = exactMatches + fuzzyMatches.sortedByDescending { it.second }
-        val targetPositionedTokens = tokenizeWithOffsets(targetText, typeaheadMetadata.tokenizeRegexString)
+        val targetPositionedTokens = tokenizeWithOffsets(targetText, _metadata.tokenizeRegexString)
 
         return toTokenizedHeatmap(
             matchedPairs = allMatches,
@@ -610,7 +610,7 @@ class TypeaheadSearchEngine<T, K>(
 
             // Update only the inverted-index entries touched by this doc's tokens,
             // preserving all other buckets via structural sharing.
-            var index = current.index
+            var index = current.indexInDocId
             for ((position, t) in canonical.withIndex()) {
                 val bucket = index[t] ?: persistentHashMapOf()
                 val existing = bucket[docId]
@@ -621,7 +621,7 @@ class TypeaheadSearchEngine<T, K>(
             current.copy(
                 tokenPool = pool,
                 embeddings = embeddings,
-                index = index,
+                indexInDocId = index,
                 tokens = current.tokens.put(docId, canonical.toPersistentHashSet()),
                 store = current.store?.put(docId, item),
             )
@@ -744,7 +744,7 @@ class TypeaheadSearchEngine<T, K>(
             val docTokens = current.tokens[docId]
             if (!presentInStore && docTokens == null) return@update current
 
-            var inverted = current.index
+            var inverted = current.indexInDocId
             if (docTokens != null) {
                 for (token in docTokens) {
                     val existing = inverted[token] ?: continue
@@ -758,7 +758,7 @@ class TypeaheadSearchEngine<T, K>(
             }
 
             current.copy(
-                index = inverted,
+                indexInDocId = inverted,
                 tokens = current.tokens.remove(docId),
                 store = currentStore?.remove(docId),
             )
@@ -778,7 +778,7 @@ class TypeaheadSearchEngine<T, K>(
      */
     override fun clear() {
         state.value = EngineState(
-            store = if (typeaheadMetadata.haveStore) persistentHashMapOf() else null
+            store = if (_metadata.haveStore) persistentHashMapOf() else null
         )
     }
 
@@ -865,16 +865,16 @@ class TypeaheadSearchEngine<T, K>(
 
         // 1. P0 Anchor (Absolute foundation)
         // The first letter is highly reliable in typeahead scenarios.
-        vector["A_${word[0]}"] = typeaheadMetadata.anchorWeight
+        vector["A_${word[0]}"] = _metadata.anchorWeight
 
         // 2. Length Bucket (Length synchronizer)
         // Elevates words with the exact same length during typographical errors.
-        vector["L_$length"] = typeaheadMetadata.lengthWeight
+        vector["L_$length"] = _metadata.lengthWeight
 
         // 3. Typoglycemia Gestalt Anchor
         // Captures perfectly 1-character typos where the length, first, and last characters match.
         if (length > 1) {
-            vector["G_${word[0]}_${length}_${word.last()}"] = typeaheadMetadata.gestaltWeight
+            vector["G_${word[0]}_${length}_${word.last()}"] = _metadata.gestaltWeight
         }
 
         // 4. Strict & Fuzzy Prefixes (The core of Typeahead)
@@ -882,13 +882,13 @@ class TypeaheadSearchEngine<T, K>(
             val prefix = word.substring(0, i)
 
             // Strict Prefix: Rewards perfect typing sequence.
-            vector["P_$prefix"] = i * typeaheadMetadata.prefixWeight
+            vector["P_$prefix"] = i * _metadata.prefixWeight
 
             if (i >= 2) {
                 // Fuzzy Prefix: Mitigates transpositions (e.g., "Cna" vs "Canada").
                 // Anchors the first character and sorts the remainder of the prefix.
                 val sortedRest = prefix.substring(1).toCharArray().apply { sort() }.joinToString("")
-                vector["F_${word[0]}_$sortedRest"] = i * typeaheadMetadata.fuzzyWeight
+                vector["F_${word[0]}_$sortedRest"] = i * _metadata.fuzzyWeight
             }
             yield()
         }
@@ -896,26 +896,26 @@ class TypeaheadSearchEngine<T, K>(
         // 5. Skip-Grams (Bridge for deletions and insertions)
         for (i in 0 until length - 2) {
             val skipKey = "${word[i]}${word[i + 2]}"
-            vector[skipKey] = (vector[skipKey] ?: 0.0f) + typeaheadMetadata.skipWeight
+            vector[skipKey] = (vector[skipKey] ?: 0.0f) + _metadata.skipWeight
         }
 
         // 6. Character Bag (Edit-distance proximity signal)
         // One feature per distinct character, position-independent.
         // Captures overall character composition so that strings differing by
-        if (typeaheadMetadata.charBagWeight > 0f) {
+        if (_metadata.charBagWeight > 0f) {
             for (ch in word) {
                 val key = "CB_$ch"
-                if (key !in vector) vector[key] = typeaheadMetadata.charBagWeight
+                if (key !in vector) vector[key] = _metadata.charBagWeight
             }
         }
 
         // 7. Floating N-Grams (The structural skeleton)
         for (i in 0 until length) {
-            for (n in 2..typeaheadMetadata.maxNgramSize) {
+            for (n in 2.._metadata.maxNgramSize) {
                 if (i + n <= length) {
                     val ngram = word.substring(i, i + n)
                     // Linear progression for weights avoids complex branching operations.
-                    val weight = n * typeaheadMetadata.floatingWeight
+                    val weight = n * _metadata.floatingWeight
                     vector[ngram] = (vector[ngram] ?: 0.0f) + weight
                 }
             }
@@ -959,14 +959,15 @@ class TypeaheadSearchEngine<T, K>(
      * all subsequent PersistentMap (HAMT) traversals O(1).
      */
     @PublishedApi
-    internal fun generateDocId(item: T): DocId =
-        "${textSelector(item)}\u0000${keySelector(item)}"
+    internal fun generateDocId(item: T): DocId {
+        return "${textSelector(item)}\u0000${keySelector(item)}"
+    }
 
     /**
      * Splits the input text into lowercase word tokens, filtering out blanks.
      */
     fun tokenize(text: String): Set<Token> {
-        val tokenizeRegex = Regex(typeaheadMetadata.tokenizeRegexString)
+        val tokenizeRegex = Regex(_metadata.tokenizeRegexString)
         return text
             .split(tokenizeRegex)
             .asSequence()
@@ -995,7 +996,7 @@ class TypeaheadSearchEngine<T, K>(
         const val DEFAULT_CHAR_BAG_WEIGHT = 20.0f
         const val DEFAULT_MAX_RESULTS = 5
         const val FIND_BATCH_SIZE = 512
-        const val DEFAULT_TOP_K_VOCAB = 50
+        const val DEFAULT_TOP_K_VOCAB = 5
         const val DEFAULT_ADJACENCY_BONUS = 0.5f
         const val DEFAULT_TOKENIZE_REGEX_STRING = """[^\p{L}\d]+"""
         const val DEFAULT_HAVE_STORE = false
@@ -1274,7 +1275,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.exportToSink(
     val polymorphicSerializer = TypeaheadRecord.serializer(itemSerializer)
     val currentState = state.value
     val records: Sequence<TypeaheadRecord<T>> = sequence {
-        yield(typeaheadMetadata)
+        yield(_metadata)
         // Emit vocabulary entries (Flyweight cache)
         currentState.embeddings.forEach { (token, vector) ->
             yield(TypeaheadVocabularyEntry(token = token, vector = vector))
@@ -1346,14 +1347,14 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
         )
 
         if (clearExisting) state.value = TypeaheadSearchEngine.EngineState(
-            store = if (typeaheadMetadata.haveStore) persistentHashMapOf() else null
+            store = if (_metadata.haveStore) persistentHashMapOf() else null
         )
 
         state.update { s ->
-            var meta = typeaheadMetadata
+            var meta = _metadata
             var pool = s.tokenPool
             var vocabulary = s.embeddings
-            var invertedIndex = s.index
+            var invertedIndex = s.indexInDocId
             var forwardIndex = s.tokens
             var documentStore = s.store
 
@@ -1400,11 +1401,11 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
                     }
                 }
             }
-            typeaheadMetadata = meta
+            _metadata = meta
             TypeaheadSearchEngine.EngineState(
                 tokenPool = pool,
                 embeddings = vocabulary,
-                index = invertedIndex,
+                indexInDocId = invertedIndex,
                 tokens = forwardIndex,
                 store = documentStore,
             )
