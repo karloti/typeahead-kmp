@@ -10,7 +10,7 @@ COPY --chown=gradle:gradle . .
 RUN sed -i 's/\r$//' gradlew && chmod +x gradlew
 
 # Build the JS application
-RUN ./gradlew :typeahead-demo:jsBrowserDistribution --no-daemon
+RUN ./gradlew :typeahead-demo:wasmJsBrowserDistribution --no-daemon
 
 # Stage 2: Serve with Nginx
 FROM nginx:alpine

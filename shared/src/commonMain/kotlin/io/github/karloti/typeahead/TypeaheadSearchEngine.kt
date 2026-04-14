@@ -175,12 +175,13 @@ class TypeaheadSearchEngine<T, K>(
         val queryTokenList = queryTokens.toList()
 
         // Cache query vectors before both phases (also used by heatmap).
-        val queryVectors = Array(tokenCount) { i ->
-            currentState.embeddings[queryTokenList[i]] ?: embedding(queryTokenList[i])
+        val queryVectors = coroutineScope {
+            queryTokenList.map {
+                async { currentState.embeddings[it] ?: embedding(it) }
+            }.awaitAll()
         }
-        _lastQueryVectors = buildMap(tokenCount) {
-            for (i in 0 until tokenCount) put(queryTokenList[i], queryVectors[i])
-        }
+
+        _lastQueryVectors = queryTokens.indices.associate { i -> queryTokenList[i] to queryVectors[i] }
 
         // ── Phase 1: Parallel vocabulary scan → candidate document set ──
         // All Q query tokens scan the vocabulary CONCURRENTLY via async jobs.
@@ -188,9 +189,8 @@ class TypeaheadSearchEngine<T, K>(
         // them into document IDs.  The UNION forms the candidate set.
 
         val candidateDocIds: Set<DocId> = coroutineScope {
-            val topKJobs = Array(tokenCount) { q ->
+            val topKJobs = queryVectors.map {  qVector ->
                 async {
-                    val qVector = queryVectors[q]
                     val cpq = ConcurrentPriorityQueue(
                         maxSize = _metadata.topKVocab,
                         dispatcher = defaultDispatcher,
@@ -226,7 +226,7 @@ class TypeaheadSearchEngine<T, K>(
         // coroutineScope guarantees visibility after all children join.
 
         val uniqueDocTokens = mutableSetOf<Token>()
-        for (docId in candidateDocIds) {
+        candidateDocIds.forEach { docId ->
             currentState.tokens[docId]?.let { uniqueDocTokens.addAll(it) }
         }
 
@@ -234,7 +234,7 @@ class TypeaheadSearchEngine<T, K>(
         val cacheEntries = arrayOfNulls<FloatArray>(tokenList.size)
 
         coroutineScope {
-            val chunkSize = (tokenList.size + 3) / 4 // ~4 parallel chunks
+            val chunkSize = (tokenList.size + 7) / 8 // ~4 parallel chunks
             for (start in tokenList.indices step chunkSize) {
                 val end = min(start + chunkSize, tokenList.size)
                 launch {

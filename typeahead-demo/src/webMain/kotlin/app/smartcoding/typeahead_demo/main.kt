@@ -19,13 +19,11 @@ package app.smartcoding.typeahead_demo
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.window.ComposeViewport
 import androidx.lifecycle.viewmodel.compose.viewModel
-import dev.gitlive.firebase.Firebase
-import dev.gitlive.firebase.FirebaseOptions
-import dev.gitlive.firebase.initialize
 import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.Dispatchers
 
+/*
 val firebaseOptions = FirebaseOptions(
     apiKey = "AIzaSyBaFhBAaLW7gg89nyVfTcJ5Xav5i-12vX0",         // от JS: apiKey
     authDomain = "typeahead-kmp.firebaseapp.com",               // от JS: authDomain (Важно за Google Sign-In!)
@@ -35,10 +33,11 @@ val firebaseOptions = FirebaseOptions(
     gaTrackingId = "G-7TF74DN0J2",                               // от JS: measurementId
     gcmSenderId = "942294408844"                               // от JS: messagingSenderId
 )
+*/
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun main() {
-    Firebase.initialize(options = firebaseOptions)
+//    Firebase.initialize(options = firebaseOptions)
 
     val typeaheadSearchEngine = TypeaheadSearchEngine(
         metadata = TypeaheadRecord.TypeaheadMetadata(

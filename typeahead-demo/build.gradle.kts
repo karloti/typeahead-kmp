@@ -16,6 +16,7 @@
 
 @file:OptIn(ExperimentalDistributionDsl::class)
 
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.targets.js.dsl.ExperimentalDistributionDsl
 
 plugins {
@@ -28,6 +29,7 @@ plugins {
 
 kotlin {
 
+/*
     js {
         outputModuleName = "typeahead-demo"
         compilerOptions {
@@ -46,15 +48,27 @@ kotlin {
         generateTypeScriptDefinitions()
         binaries.executable()
     }
+*/
 
-/*
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
         outputModuleName = "typeahead-demo"
-        browser()
+        compilerOptions {
+            moduleName.set("typeahead-demo")
+        }
+        browser {
+            distribution {
+                outputDirectory.set(project.layout.buildDirectory.dir("dist/js"))
+            }
+            commonWebpackConfig {
+                cssSupport {
+                    enabled = true
+                }
+            }
+        }
+        generateTypeScriptDefinitions()
         binaries.executable()
     }
-*/
 
     // Source set declarations.
     // Declaring a target automatically creates a source set with the same name. By default, the
@@ -88,9 +102,9 @@ kotlin {
             implementation(libs.kotlinx.browser)
             implementation(libs.navigation3.browser)
 
-            implementation(npm("firebase", "12.9.0"))
-            implementation(libs.gitlive.firebase.firestore)
-            implementation(libs.gitlive.firebase.auth)
+//            implementation(npm("firebase", "12.9.0"))
+//            implementation(libs.gitlive.firebase.firestore)
+//            implementation(libs.gitlive.firebase.auth)
         }
     }
 }
