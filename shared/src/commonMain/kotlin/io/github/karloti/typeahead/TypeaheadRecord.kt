@@ -57,7 +57,6 @@ sealed interface TypeaheadRecord<out T> {
      * @property ignoreCase Whether to ignore character casing during search and tokenization. Defaults to `true`.
      * @property maxNgramSize The maximum size of N-grams to extract for floating positional matching. Defaults to 4.
      * @property anchorWeight The weight applied to the first character match (P0 Anchor). Defaults to 10.0.
-     * @property lengthWeight The weight applied to the exact length bucket match. Defaults to 8.0.
      * @property gestaltWeight The weight for the Typoglycemia Gestalt anchor (matching first, last, and length). Defaults to 8.0.
      * @property prefixWeight The weight for strict prefix matching. Defaults to 6.0.
      * @property fuzzyWeight The weight for fuzzy prefix matching (transposition tolerant). Defaults to 5.0.
@@ -79,7 +78,7 @@ sealed interface TypeaheadRecord<out T> {
         val ignoreCase: Boolean = TypeaheadSearchEngine.DEFAULT_IGNORE_CASE,
         val maxNgramSize: Int = TypeaheadSearchEngine.DEFAULT_MAX_NGRAM_SIZE,
         val anchorWeight: Float = TypeaheadSearchEngine.DEFAULT_ANCHOR_WEIGHT,
-        val lengthWeight: Float = TypeaheadSearchEngine.DEFAULT_LENGTH_WEIGHT,
+//        val lengthWeight: Float = TypeaheadSearchEngine.DEFAULT_LENGTH_WEIGHT,
         val gestaltWeight: Float = TypeaheadSearchEngine.DEFAULT_GESTALT_WEIGHT,
         val prefixWeight: Float = TypeaheadSearchEngine.DEFAULT_PREFIX_WEIGHT,
         val fuzzyWeight: Float = TypeaheadSearchEngine.DEFAULT_FUZZY_WEIGHT,

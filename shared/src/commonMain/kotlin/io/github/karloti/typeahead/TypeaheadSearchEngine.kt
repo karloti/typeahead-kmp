@@ -40,8 +40,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.io.decodeSourceToSequence
 import kotlinx.serialization.json.io.encodeToSink
 import kotlinx.serialization.serializer
-import kotlin.collections.forEachIndexed
-import kotlin.collections.mutableMapOf
 import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.min
@@ -188,33 +186,32 @@ class TypeaheadSearchEngine<T, K>(
         // Each job finds its topK vocab matches; the inverted index expands
         // them into document IDs.  The UNION forms the candidate set.
 
-        val candidateDocIds: Set<DocId> = coroutineScope {
-            val topKJobs = queryVectors.map {  qVector ->
-                async {
-                    val cpq = ConcurrentPriorityQueue(
-                        maxSize = _metadata.topKVocab,
-                        dispatcher = defaultDispatcher,
-                        comparator = compareByDescending(Pair<Token, Float>::second),
-                        keySelector = Pair<Token, Float>::first
-                    )
-                    cpq.addAll(
-                        elements = currentState.embeddings.entries.asSequence().asFlow(),
-                        transform = { (vocabWord, vocabVector) ->
-                            vocabWord to (qVector dotProduct vocabVector)
-                        }
-                    )
-                    cpq.items.value.map { it.first }
-                }
-            }
+        val candidateDocIds = mutableSetOf<DocId>()
+        val vocabEntries = currentState.embeddings.entries
 
-            val docIds = mutableSetOf<DocId>()
-            for (deferred in topKJobs) {
-                for (vocabToken in deferred.await()) {
-                    currentState.indexInDocId[vocabToken]?.keys?.let { docIds.addAll(it) }
+        queryVectors.asFlow().flatMapMerge(concurrency = queryVectors.size) { qVector ->
+            flow {
+                val cpq = ConcurrentPriorityQueue(
+                    maxSize = _metadata.topKVocab,
+                    dispatcher = defaultDispatcher,
+                    comparator = compareByDescending(Pair<Token, Float>::second),
+                    keySelector = Pair<Token, Float>::first
+                )
+                cpq.addAll(
+                    elements = vocabEntries.asSequence().asFlow(),
+                    transform = { (vocabWord, vocabVector) ->
+                        vocabWord to (qVector dotProduct vocabVector)
+                    }
+                )
+                cpq.items.value.forEach { (vocabWord, _) ->
+                    currentState.indexInDocId[vocabWord]?.keys?.let { emit(it) }
                 }
             }
-            docIds
         }
+            .flowOn(defaultDispatcher)
+            .collect { setOfDocIds ->
+                candidateDocIds.addAll(setOfDocIds)
+            }
 
         if (candidateDocIds.isEmpty()) return@withContext emptyList()
 
@@ -225,35 +222,24 @@ class TypeaheadSearchEngine<T, K>(
         // a separate coroutine.  Each chunk writes to non-overlapping array indices;
         // coroutineScope guarantees visibility after all children join.
 
-        val uniqueDocTokens = mutableSetOf<Token>()
-        candidateDocIds.forEach { docId ->
-            currentState.tokens[docId]?.let { uniqueDocTokens.addAll(it) }
-        }
+        val scoreCache = mutableMapOf<Token, FloatArray>()
 
-        val tokenList = uniqueDocTokens.toList()
-        val cacheEntries = arrayOfNulls<FloatArray>(tokenList.size)
-
-        coroutineScope {
-            val chunkSize = (tokenList.size + 7) / 8 // ~4 parallel chunks
-            for (start in tokenList.indices step chunkSize) {
-                val end = min(start + chunkSize, tokenList.size)
-                launch {
-                    for (i in start until end) {
-                        val dVector = currentState.embeddings[tokenList[i]] ?: continue
-                        val scores = FloatArray(tokenCount)
-                        for (q in 0 until tokenCount) {
-                            scores[q] = queryVectors[q] dotProduct dVector
-                        }
-                        cacheEntries[i] = scores
-                    }
+        candidateDocIds
+            .asSequence()
+            .flatMap { currentState.tokens[it] ?: emptySet() }
+            .distinct()
+            .asFlow()
+            .flatMapMerge { token ->
+                flow {
+                    val dVector = currentState.embeddings[token] ?: return@flow
+                    val scores = FloatArray(tokenCount) { q -> queryVectors[q] dotProduct dVector }
+                    emit(token to scores)
                 }
             }
-        }
-
-        val scoreCache = HashMap<Token, FloatArray>(tokenList.size)
-        for (i in tokenList.indices) {
-            cacheEntries[i]?.let { scoreCache[tokenList[i]] = it }
-        }
+            .flowOn(defaultDispatcher)
+            .collect { (token, scores) ->
+                scoreCache[token] = scores
+            }
 
         // ── Phase 2: Score candidates via cached lookups + harmonic mean ──
 
@@ -271,19 +257,19 @@ class TypeaheadSearchEngine<T, K>(
                 val matchScores = FloatArray(tokenCount)
                 val matchPositions = mutableListOf<Int>()
 
-                for (q in 0 until tokenCount) {
+                queryTokens.indices.forEach { i ->
                     var bestScore = 0.0f
                     var bestMatchToken: Token? = null
 
-                    for (docToken in docTokens) {
-                        val score = scoreCache[docToken]?.get(q) ?: 0f
+                    docTokens.forEach { docToken ->
+                        val score = scoreCache[docToken]?.get(i) ?: 0f
                         if (score > bestScore) {
                             bestScore = score
                             bestMatchToken = docToken
                         }
                     }
 
-                    matchScores[q] = bestScore
+                    matchScores[i] = bestScore
                     if (bestScore > 0f && bestMatchToken != null) {
                         val pos = currentState.indexInDocId[bestMatchToken]?.get(docId) ?: -1
                         if (pos >= 0) matchPositions.add(pos)
@@ -869,7 +855,7 @@ class TypeaheadSearchEngine<T, K>(
 
         // 2. Length Bucket (Length synchronizer)
         // Elevates words with the exact same length during typographical errors.
-        vector["L_$length"] = _metadata.lengthWeight
+//        vector["L_$length"] = _metadata.lengthWeight
 
         // 3. Typoglycemia Gestalt Anchor
         // Captures perfectly 1-character typos where the length, first, and last characters match.
@@ -887,7 +873,7 @@ class TypeaheadSearchEngine<T, K>(
             if (i >= 2) {
                 // Fuzzy Prefix: Mitigates transpositions (e.g., "Cna" vs "Canada").
                 // Anchors the first character and sorts the remainder of the prefix.
-                val sortedRest = prefix.substring(1).toCharArray().apply { sort() }.joinToString("")
+                val sortedRest = prefix.drop(1).toCharArray().sorted().joinToString("")
                 vector["F_${word[0]}_$sortedRest"] = i * _metadata.fuzzyWeight
             }
             yield()
@@ -903,10 +889,7 @@ class TypeaheadSearchEngine<T, K>(
         // One feature per distinct character, position-independent.
         // Captures overall character composition so that strings differing by
         if (_metadata.charBagWeight > 0f) {
-            for (ch in word) {
-                val key = "CB_$ch"
-                if (key !in vector) vector[key] = _metadata.charBagWeight
-            }
+            word.toSet().forEach { ch -> vector["CB_$ch"] = _metadata.charBagWeight }
         }
 
         // 7. Floating N-Grams (The structural skeleton)
@@ -986,11 +969,11 @@ class TypeaheadSearchEngine<T, K>(
 
         const val DEFAULT_IGNORE_CASE = true
         const val DEFAULT_MAX_NGRAM_SIZE = 4
-        const val DEFAULT_ANCHOR_WEIGHT = 10.0f
-        const val DEFAULT_LENGTH_WEIGHT = 3.0f
-        const val DEFAULT_GESTALT_WEIGHT = 4.0f
-        const val DEFAULT_PREFIX_WEIGHT = 6.0f
-        const val DEFAULT_FUZZY_WEIGHT = 5.0f
+        const val DEFAULT_ANCHOR_WEIGHT = 5.0f
+
+        const val DEFAULT_GESTALT_WEIGHT = 1f
+        const val DEFAULT_PREFIX_WEIGHT = 5f
+        const val DEFAULT_FUZZY_WEIGHT = 3.0f
         const val DEFAULT_SKIP_WEIGHT = 2.0f
         const val DEFAULT_FLOATING_WEIGHT = 1.0f
         const val DEFAULT_CHAR_BAG_WEIGHT = 20.0f

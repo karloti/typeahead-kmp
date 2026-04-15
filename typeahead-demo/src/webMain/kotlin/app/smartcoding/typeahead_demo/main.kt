@@ -23,30 +23,13 @@ import io.github.karloti.typeahead.TypeaheadRecord
 import io.github.karloti.typeahead.TypeaheadSearchEngine
 import kotlinx.coroutines.Dispatchers
 
-/*
-val firebaseOptions = FirebaseOptions(
-    apiKey = "AIzaSyBaFhBAaLW7gg89nyVfTcJ5Xav5i-12vX0",         // от JS: apiKey
-    authDomain = "typeahead-kmp.firebaseapp.com",               // от JS: authDomain (Важно за Google Sign-In!)
-    projectId = "typeahead-kmp",                                // от JS: projectId
-    storageBucket = "typeahead-kmp.firebasestorage.app",        // от JS: storageBucket
-    applicationId = "1:942294408844:web:1faa6dd9e0898fdeb665a9", // от JS: appId
-    gaTrackingId = "G-7TF74DN0J2",                               // от JS: measurementId
-    gcmSenderId = "942294408844"                               // от JS: messagingSenderId
-)
-*/
-
 @OptIn(ExperimentalComposeUiApi::class)
 fun main() {
-//    Firebase.initialize(options = firebaseOptions)
 
     val typeaheadSearchEngine = TypeaheadSearchEngine(
         metadata = TypeaheadRecord.TypeaheadMetadata(
             maxResults = 10,
             haveStore = true,
-//            adjacencyBonus = 0.3f,
-//            charBagWeight = 40f,
-            topKVocab = 5,
-//            prefixWeight = 4f
         ),
         textSelector = Pair<String, String>::second,
         keySelector = Pair<String, String>::first,

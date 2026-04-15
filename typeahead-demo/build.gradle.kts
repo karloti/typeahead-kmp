@@ -29,27 +29,6 @@ plugins {
 
 kotlin {
 
-/*
-    js {
-        outputModuleName = "typeahead-demo"
-        compilerOptions {
-            moduleName.set("typeahead-demo")
-        }
-        browser {
-            distribution {
-                outputDirectory.set(project.layout.buildDirectory.dir("dist/js"))
-            }
-            commonWebpackConfig {
-                cssSupport {
-                    enabled = true
-                }
-            }
-        }
-        generateTypeScriptDefinitions()
-        binaries.executable()
-    }
-*/
-
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
         outputModuleName = "typeahead-demo"
@@ -101,10 +80,6 @@ kotlin {
         webMain.dependencies {
             implementation(libs.kotlinx.browser)
             implementation(libs.navigation3.browser)
-
-//            implementation(npm("firebase", "12.9.0"))
-//            implementation(libs.gitlive.firebase.firestore)
-//            implementation(libs.gitlive.firebase.auth)
         }
     }
 }
