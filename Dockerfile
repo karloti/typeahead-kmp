@@ -6,6 +6,11 @@ WORKDIR /home/gradle/src
 # Copy project files
 COPY --chown=gradle:gradle . .
 
+# Install libatomic1 (required by Node.js v25+ which Kotlin Gradle plugin downloads for Wasm tooling)
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && rm -rf /var/lib/apt/lists/*
+USER gradle
+
 # Fix line endings for gradlew and make executable
 RUN sed -i 's/\r$//' gradlew && chmod +x gradlew
 
