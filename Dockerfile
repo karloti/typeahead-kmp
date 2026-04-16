@@ -6,13 +6,18 @@ WORKDIR /home/gradle/src
 # Copy project files
 COPY --chown=gradle:gradle . .
 
-# Install libatomic1 (required by Node.js v25+ which Kotlin Gradle plugin downloads for Wasm tooling)
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && rm -rf /var/lib/apt/lists/*
-USER gradle
 
-# Fix line endings for gradlew and make executable
+# Install libatomic1 (required by Node.js v25+ which Kotlin Gradle plugin downloads for Wasm tooling)
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && rm -rf /var/lib/apt/lists/*
+
+# Fix line endings for gradlew and make executable (as root)
 RUN sed -i 's/\r$//' gradlew && chmod +x gradlew
+
+# Ensure the project directory is owned by gradle (WORKDIR creates it as root)
+RUN chown gradle:gradle /home/gradle/src
+
+USER gradle
 
 # Build the JS application
 RUN ./gradlew :typeahead-demo:wasmJsBrowserDistribution --no-daemon
@@ -22,7 +27,7 @@ FROM nginx:alpine
 
 # Copy the build artifacts from the build stage
 # The path matches your build.gradle.kts configuration
-COPY --from=build /home/gradle/src/typeahead-demo/build/dist/js/ /usr/share/nginx/html
+COPY --from=build /home/gradle/src/typeahead-demo/build/dist/wasmJs/ /usr/share/nginx/html
 
 # Configure Nginx to listen on port 8080 (required for Cloud Run)
 RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf

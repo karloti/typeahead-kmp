@@ -28,8 +28,7 @@ fun main() {
 
     val typeaheadSearchEngine = TypeaheadSearchEngine(
         metadata = TypeaheadRecord.TypeaheadMetadata(
-            maxResults = 10,
-            haveStore = true,
+            haveStore = true
         ),
         textSelector = Pair<String, String>::second,
         keySelector = Pair<String, String>::first,

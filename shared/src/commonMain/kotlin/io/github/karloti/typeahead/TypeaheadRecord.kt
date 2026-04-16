@@ -78,7 +78,6 @@ sealed interface TypeaheadRecord<out T> {
         val ignoreCase: Boolean = TypeaheadSearchEngine.DEFAULT_IGNORE_CASE,
         val maxNgramSize: Int = TypeaheadSearchEngine.DEFAULT_MAX_NGRAM_SIZE,
         val anchorWeight: Float = TypeaheadSearchEngine.DEFAULT_ANCHOR_WEIGHT,
-//        val lengthWeight: Float = TypeaheadSearchEngine.DEFAULT_LENGTH_WEIGHT,
         val gestaltWeight: Float = TypeaheadSearchEngine.DEFAULT_GESTALT_WEIGHT,
         val prefixWeight: Float = TypeaheadSearchEngine.DEFAULT_PREFIX_WEIGHT,
         val fuzzyWeight: Float = TypeaheadSearchEngine.DEFAULT_FUZZY_WEIGHT,

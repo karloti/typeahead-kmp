@@ -37,7 +37,7 @@ kotlin {
         }
         browser {
             distribution {
-                outputDirectory.set(project.layout.buildDirectory.dir("dist/js"))
+                outputDirectory.set(project.layout.buildDirectory.dir("dist/wasmJs"))
             }
             commonWebpackConfig {
                 cssSupport {

@@ -969,18 +969,17 @@ class TypeaheadSearchEngine<T, K>(
 
         const val DEFAULT_IGNORE_CASE = true
         const val DEFAULT_MAX_NGRAM_SIZE = 4
-        const val DEFAULT_ANCHOR_WEIGHT = 5.0f
-
-        const val DEFAULT_GESTALT_WEIGHT = 1f
+        const val DEFAULT_ANCHOR_WEIGHT = 5f
         const val DEFAULT_PREFIX_WEIGHT = 5f
-        const val DEFAULT_FUZZY_WEIGHT = 3.0f
-        const val DEFAULT_SKIP_WEIGHT = 2.0f
-        const val DEFAULT_FLOATING_WEIGHT = 1.0f
-        const val DEFAULT_CHAR_BAG_WEIGHT = 20.0f
-        const val DEFAULT_MAX_RESULTS = 5
-        const val FIND_BATCH_SIZE = 512
-        const val DEFAULT_TOP_K_VOCAB = 5
+        const val DEFAULT_FLOATING_WEIGHT = 3f
+        const val DEFAULT_FUZZY_WEIGHT = 2.0f
+        const val DEFAULT_SKIP_WEIGHT = 1f
+        const val DEFAULT_GESTALT_WEIGHT = 0.5f
+        const val DEFAULT_CHAR_BAG_WEIGHT = 1f
         const val DEFAULT_ADJACENCY_BONUS = 0.5f
+        const val FIND_BATCH_SIZE = 512
+        const val DEFAULT_MAX_RESULTS = 5
+        const val DEFAULT_TOP_K_VOCAB = 5
         const val DEFAULT_TOKENIZE_REGEX_STRING = """[^\p{L}\d]+"""
         const val DEFAULT_HAVE_STORE = false
 
