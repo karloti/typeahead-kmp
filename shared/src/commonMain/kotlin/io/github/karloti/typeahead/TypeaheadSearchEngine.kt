@@ -23,9 +23,7 @@ import io.github.karloti.typeahead.TypeaheadRecord.*
 import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.EPSILON_FLOAT
 import io.github.karloti.typeahead.TypeaheadSearchEngine.Companion.FIND_BATCH_SIZE
 import kotlinx.collections.immutable.PersistentMap
-import kotlinx.collections.immutable.PersistentSet
 import kotlinx.collections.immutable.persistentHashMapOf
-import kotlinx.collections.immutable.toPersistentHashSet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -50,7 +48,7 @@ typealias DocId = String
 
 data class TypeaheadResult(
     val docId: DocId,
-    val tokens: PersistentSet<Token>,
+    val tokens: LinkedHashSet<Token>,
     val score: Float
 )
 
@@ -116,7 +114,7 @@ class TypeaheadSearchEngine<T, K>(
         val tokenPool: PersistentMap<String, Token> = persistentHashMapOf(),
         val embeddings: PersistentMap<Token, SparseVector> = persistentHashMapOf(),
         val indexInDocId: PersistentMap<Token, PersistentMap<DocId, Int>> = persistentHashMapOf(),
-        val tokens: PersistentMap<DocId, PersistentSet<Token>> = persistentHashMapOf(),
+        val tokens: PersistentMap<DocId, LinkedHashSet<Token>> = persistentHashMapOf(),
         val store: PersistentMap<DocId, T>?,
     )
 
@@ -151,178 +149,188 @@ class TypeaheadSearchEngine<T, K>(
     }
 
     private suspend fun updateSearch(query: String) {
-        val snapshot = state.value
-        val base = performSearch(query, snapshot)
-        _results.value = base
-        val currentStore = snapshot.store
-        if (currentStore != null) {
-            _storeResults?.value = base.mapNotNull { br ->
-                currentStore[br.docId]?.let { item -> item to br.score }
+        state.value.let { engineState ->
+            engineState.performSearch(query).let { typeaheadResults ->
+                _results.value = typeaheadResults
+                _storeResults?.let { storeResults ->
+                    storeResults.value = typeaheadResults.mapNotNull { result ->
+                        engineState.store!![result.docId]?.let { it to result.score }
+                    }
+                }
             }
         }
     }
 
-    private suspend fun performSearch(
-        query: String,
-        currentState: EngineState<T> = state.value,
-    ): List<TypeaheadResult> = withContext(defaultDispatcher) {
-        val queryTokens = tokenize(query)
-        if (queryTokens.isEmpty()) return@withContext emptyList()
+    private suspend fun EngineState<T>.performSearch(query: String): List<TypeaheadResult> =
+        withContext(defaultDispatcher) {
 
-        val tokenCount = queryTokens.size
-        val queryTokenList = queryTokens.toList()
+            // Cache query vectors before both phases (also used by heatmap).
+            val queries = tokenize(query)
+                .take(5)
+                .takeIf { it.isNotEmpty() }
+                ?.map { async { it to (embeddings[it] ?: embedding(it)) } }
+                ?.awaitAll()
+                ?.toMap()
+                ?.also { _lastQueryVectors = it }
+                ?: return@withContext emptyList()
 
-        // Cache query vectors before both phases (also used by heatmap).
-        val queryVectors = coroutineScope {
-            queryTokenList.map {
-                async { currentState.embeddings[it] ?: embedding(it) }
-            }.awaitAll()
-        }
+            val queryCount = queries.size
 
-        _lastQueryVectors = queryTokens.indices.associate { i -> queryTokenList[i] to queryVectors[i] }
+            // ── Phase 1: Parallel vocabulary scan → candidate document set ──
+            // All Q query tokens scan the vocabulary CONCURRENTLY via async jobs.
+            // Each job finds its topK vocab matches; the inverted index expands
+            // them into document IDs.  The UNION forms the candidate set.
 
-        // ── Phase 1: Parallel vocabulary scan → candidate document set ──
-        // All Q query tokens scan the vocabulary CONCURRENTLY via async jobs.
-        // Each job finds its topK vocab matches; the inverted index expands
-        // them into document IDs.  The UNION forms the candidate set.
-
-        val candidateDocIds = mutableSetOf<DocId>()
-        val vocabEntries = currentState.embeddings.entries
-
-        queryVectors.asFlow().flatMapMerge(concurrency = queryVectors.size) { qVector ->
-            flow {
-                val cpq = ConcurrentPriorityQueue(
-                    maxSize = _metadata.topKVocab,
-                    dispatcher = defaultDispatcher,
-                    comparator = compareByDescending(Pair<Token, Float>::second),
-                    keySelector = Pair<Token, Float>::first
-                )
-                cpq.addAll(
-                    elements = vocabEntries.asSequence().asFlow(),
-                    transform = { (vocabWord, vocabVector) ->
-                        vocabWord to (qVector dotProduct vocabVector)
-                    }
-                )
-                cpq.items.value.forEach { (vocabWord, _) ->
-                    currentState.indexInDocId[vocabWord]?.keys?.let { emit(it) }
-                }
-            }
-        }
-            .flowOn(defaultDispatcher)
-            .collect { setOfDocIds ->
-                candidateDocIds.addAll(setOfDocIds)
-            }
-
-        if (candidateDocIds.isEmpty()) return@withContext emptyList()
-
-        // ── Score cache: parallel pre-computation of (queryToken, vocabToken) dotProducts ──
-        // Doc tokens ARE vocab tokens (Flyweight cache), so dotProduct(q[i], docToken)
-        // is identical regardless of which document contains it.  We collect all unique
-        // tokens across candidates, split them into chunks, and compute each chunk in
-        // a separate coroutine.  Each chunk writes to non-overlapping array indices;
-        // coroutineScope guarantees visibility after all children join.
-
-        val scoreCache = mutableMapOf<Token, FloatArray>()
-
-        candidateDocIds
-            .asSequence()
-            .flatMap { currentState.tokens[it] ?: emptySet() }
-            .distinct()
-            .asFlow()
-            .flatMapMerge { token ->
-                flow {
-                    val dVector = currentState.embeddings[token] ?: return@flow
-                    val scores = FloatArray(tokenCount) { q -> queryVectors[q] dotProduct dVector }
-                    emit(token to scores)
-                }
-            }
-            .flowOn(defaultDispatcher)
-            .collect { (token, scores) ->
-                scoreCache[token] = scores
-            }
-
-        // ── Phase 2: Score candidates via cached lookups + harmonic mean ──
-
-        val topResultsQueue = ConcurrentPriorityQueue(
-            maxSize = _metadata.maxResults,
-            dispatcher = defaultDispatcher,
-            comparator = compareByDescending(TypeaheadResult::score),
-            keySelector = { it: TypeaheadResult -> it.docId.substringAfter('\u0000') }
-        )
-
-        topResultsQueue.addAll(
-            elements = candidateDocIds.asSequence().asFlow(),
-            transform = { docId ->
-                val docTokens = currentState.tokens[docId]!!
-                val matchScores = FloatArray(tokenCount)
-                val matchPositions = mutableListOf<Int>()
-
-                queryTokens.indices.forEach { i ->
-                    var bestScore = 0.0f
-                    var bestMatchToken: Token? = null
-
-                    docTokens.forEach { docToken ->
-                        val score = scoreCache[docToken]?.get(i) ?: 0f
-                        if (score > bestScore) {
-                            bestScore = score
-                            bestMatchToken = docToken
+            val candidateDocIds = mutableMapOf<DocId, IntArray>().apply {
+                val vocabEntries = embeddings.asSequence().asFlow()
+                queries.asSequence().asFlow().flatMapMerge(concurrency = queries.size) { (_, qVector) ->
+                    flow {
+                        val cpq = ConcurrentPriorityQueue(
+                            maxSize = _metadata.maxResults,
+                            dispatcher = defaultDispatcher,
+                            comparator = compareByDescending(Pair<Token, Float>::second),
+                            keySelector = Pair<Token, Float>::first
+                        )
+                        cpq.addAll(
+                            elements = vocabEntries,
+                            transform = { (vocabWord, vocabVector) ->
+                                vocabWord to (qVector dotProduct vocabVector)
+                            }
+                        )
+                        cpq.items.value.forEach { (vocabWord, _) ->
+                            emit(indexInDocId[vocabWord]!!)
                         }
                     }
-
-                    matchScores[i] = bestScore
-                    if (bestScore > 0f && bestMatchToken != null) {
-                        val pos = currentState.indexInDocId[bestMatchToken]?.get(docId) ?: -1
-                        if (pos >= 0) matchPositions.add(pos)
-                    }
-                }
-
-                // Harmonic mean: heavily penalises results where some query tokens
-                // match poorly (e.g. prefix-only coincidence).  Unlike the geometric
-                // mean, it ensures that a single high score cannot compensate for a
-                // near-zero match on another token — the same principle behind F1-score.
-                val baseScore = if (tokenCount == 1) {
-                    matchScores[0]
-                } else {
-                    var reciprocalSum = 0.0
-                    for (i in 0 until tokenCount) {
-                        reciprocalSum += 1.0 / matchScores[i].toDouble().coerceAtLeast(1e-6)
-                    }
-                    (tokenCount.toDouble() / reciprocalSum).toFloat()
-                }
-
-                // Proximity with exponential decay 1/2^(gap+1).
-                val proximityRatio: Float = when {
-                    matchPositions.size >= 2 -> {
-                        matchPositions.sort()
-                        var totalDecay = 0.0f
-                        for (i in 0 until matchPositions.size - 1) {
-                            val gap = (matchPositions[i + 1] - matchPositions[i] - 1)
-                                .coerceAtLeast(0)
-                            totalDecay += 1.0f / (1 shl (gap + 1)) // 1/2^(gap+1)
+                }.collect { setOfDocIds ->
+                    setOfDocIds.forEach { (docId, pos) ->
+                        val existing = this[docId]
+                        if (existing != null) {
+                            if (pos < existing[0]) existing[0] = pos
+                            if (pos > existing[1]) existing[1] = pos
+                        } else {
+                            this[docId] = intArrayOf(pos, pos)
                         }
-                        val maxDecay = (matchPositions.size - 1) * 0.5f // all adjacent
-                        totalDecay / maxDecay // normalised to (0, 1]
                     }
-
-                    matchPositions.size == 1 && tokenCount > 1 -> 0f
-                    else -> 1.0f // single token → proximity n/a
                 }
+            }.takeIf { it.isNotEmpty() } ?: return@withContext emptyList()
 
-                val proximityFactor =
-                    1.0f - _metadata.adjacencyBonus * (1.0f - proximityRatio)
+            // ── Score cache: parallel pre-computation of (queryToken, vocabToken) dotProducts ──
+            // Doc tokens ARE vocab tokens (Flyweight cache), so dotProduct(q[i], docToken)
+            // is identical regardless of which document contains it.  We collect all unique
+            // tokens across candidates, split them into chunks, and compute each chunk in
+            // a separate coroutine.  Each chunk writes to non-overlapping array indices;
+            // coroutineScope guarantees visibility after all children join.
 
-                // BM25-inspired document-length penalty.
-                val logDocLength = log10(docTokens.size.toFloat().coerceAtLeast(1f))
-                val lengthPenalty = (1.0f - 0.1f * logDocLength).coerceAtLeast(0.5f)
-
-                val finalScore = (baseScore * proximityFactor * lengthPenalty).coerceIn(0f, 1f)
-
-                TypeaheadResult(docId = docId, tokens = docTokens, score = finalScore)
+            val topK = _metadata.topKVocab
+            val candidateTokens = mutableSetOf<Token>().apply {
+                candidateDocIds.forEach { (docId, range) ->
+                    val docTokens = tokens[docId]!!
+                    val lo = (range[0] - topK).coerceAtLeast(0)
+                    val hi = (range[1] + topK + 1).coerceAtMost(docTokens.size)
+                    addAll(docTokens.drop(lo).take(hi - lo))
+                }
             }
-        )
 
-        return@withContext topResultsQueue.items.value
-    }
+            val scoreCache = mutableMapOf<Token, FloatArray>().apply {
+                candidateTokens
+                    .asFlow()
+                    .flatMapMerge { token ->
+                        flow {
+                            val dVector = embeddings[token] ?: return@flow
+                            val scores = FloatArray(queries.size)
+                            queries.values.mapIndexed { index, qVector ->
+                                launch {
+                                    scores[index] = qVector dotProduct dVector
+                                }
+                            }.joinAll()
+                            emit(token to scores)
+                        }
+                    }
+                    .flowOn(defaultDispatcher)
+                    .collect { (token, scores) -> set(token, scores) }
+            }
+
+
+            // ── Phase 2: Score candidates via cached lookups + harmonic mean ──
+            val topResultsQueue = ConcurrentPriorityQueue(
+                maxSize = _metadata.maxResults,
+                dispatcher = defaultDispatcher,
+                comparator = compareByDescending(TypeaheadResult::score),
+                keySelector = { it.docId.substringAfter('\u0000') }
+            ).apply {
+                addAll(
+                    elements = candidateDocIds.asSequence().asFlow(),
+                    transform = { (docId, _) ->
+                        val docTokens = tokens[docId]!!
+                        val matchScores = FloatArray(queryCount)
+                        val matchPositions = mutableListOf<Int>()
+
+                        queries.values.indices.forEach { i ->
+                            var bestScore = 0.0f
+                            var bestMatchToken: Token? = null
+
+                            docTokens.forEach { docToken ->
+                                val score = scoreCache[docToken]?.get(i) ?: 0f
+                                if (score > bestScore) {
+                                    bestScore = score
+                                    bestMatchToken = docToken
+                                }
+                            }
+
+                            matchScores[i] = bestScore
+                            if (bestScore > 0f && bestMatchToken != null) {
+                                val pos = indexInDocId[bestMatchToken]?.get(docId) ?: -1
+                                if (pos >= 0) matchPositions.add(pos)
+                            }
+                        }
+
+                        // Harmonic mean: heavily penalises results where some query tokens
+                        // match poorly (e.g. prefix-only coincidence).  Unlike the geometric
+                        // mean, it ensures that a single high score cannot compensate for a
+                        // near-zero match on another token — the same principle behind F1-score.
+                        val baseScore = if (queryCount == 1) {
+                            matchScores[0]
+                        } else {
+                            var reciprocalSum = 0.0
+                            for (i in 0 until queryCount) {
+                                reciprocalSum += 1.0 / matchScores[i].toDouble().coerceAtLeast(1e-6)
+                            }
+                            (queryCount.toDouble() / reciprocalSum).toFloat()
+                        }
+
+                        // Proximity with exponential decay 1/2^(gap+1).
+                        val proximityRatio: Float = when {
+                            matchPositions.size >= 2 -> {
+                                matchPositions.sort()
+                                var totalDecay = 0.0f
+                                for (i in 0 until matchPositions.size - 1) {
+                                    val gap = (matchPositions[i + 1] - matchPositions[i] - 1)
+                                        .coerceAtLeast(0)
+                                    totalDecay += 1.0f / (1 shl (gap + 1)) // 1/2^(gap+1)
+                                }
+                                val maxDecay = (matchPositions.size - 1) * 0.5f // all adjacent
+                                totalDecay / maxDecay // normalised to (0, 1]
+                            }
+
+                            matchPositions.size == 1 && queryCount > 1 -> 0f
+                            else -> 1.0f // single token → proximity n/a
+                        }
+
+                        val proximityFactor = 1.0f - _metadata.adjacencyBonus * (1.0f - proximityRatio)
+
+                        // BM25-inspired document-length penalty.
+                        val logDocLength = log10(docTokens.size.toFloat().coerceAtLeast(1f))
+                        val lengthPenalty = (1.0f - 0.1f * logDocLength).coerceAtLeast(0.5f)
+
+                        val finalScore = (baseScore * proximityFactor * lengthPenalty).coerceIn(0f, 1f)
+
+                        TypeaheadResult(docId = docId, tokens = docTokens, score = finalScore)
+                    }
+                )
+            }
+
+            return@withContext topResultsQueue.items.value
+        }
 
     /**
      * Updates the active [query] and performs a two-stage retrieval search, storing
@@ -608,7 +616,7 @@ class TypeaheadSearchEngine<T, K>(
                 tokenPool = pool,
                 embeddings = embeddings,
                 indexInDocId = index,
-                tokens = current.tokens.put(docId, canonical.toPersistentHashSet()),
+                tokens = current.tokens.put(docId, canonical),
                 store = current.store?.put(docId, item),
             )
         }
@@ -969,16 +977,16 @@ class TypeaheadSearchEngine<T, K>(
 
         const val DEFAULT_IGNORE_CASE = true
         const val DEFAULT_MAX_NGRAM_SIZE = 4
-        const val DEFAULT_ANCHOR_WEIGHT = 5f
-        const val DEFAULT_PREFIX_WEIGHT = 5f
-        const val DEFAULT_FLOATING_WEIGHT = 3f
-        const val DEFAULT_FUZZY_WEIGHT = 2.0f
+        const val DEFAULT_ANCHOR_WEIGHT = 1f
+        const val DEFAULT_PREFIX_WEIGHT = 1f
+        const val DEFAULT_FLOATING_WEIGHT = 1f
+        const val DEFAULT_FUZZY_WEIGHT = 1f
         const val DEFAULT_SKIP_WEIGHT = 1f
-        const val DEFAULT_GESTALT_WEIGHT = 0.5f
-        const val DEFAULT_CHAR_BAG_WEIGHT = 1f
+        const val DEFAULT_CHAR_BAG_WEIGHT = 4f
+        const val DEFAULT_GESTALT_WEIGHT = 1f
         const val DEFAULT_ADJACENCY_BONUS = 0.5f
         const val FIND_BATCH_SIZE = 512
-        const val DEFAULT_MAX_RESULTS = 5
+        const val DEFAULT_MAX_RESULTS = 10
         const val DEFAULT_TOP_K_VOCAB = 5
         const val DEFAULT_TOKENIZE_REGEX_STRING = """[^\p{L}\d]+"""
         const val DEFAULT_HAVE_STORE = false
@@ -1350,7 +1358,7 @@ inline fun <reified T, K> TypeaheadSearchEngine<T, K>.importFromSource(
                     val newPos = if (existingPos == null) position else min(existingPos, position)
                     invertedIndex = invertedIndex.put(token, bucket.put(docId, newPos))
                 }
-                forwardIndex = forwardIndex.put(docId, canonicalTokens.toPersistentHashSet())
+                forwardIndex = forwardIndex.put(docId, canonicalTokens)
             }
 
             sequence.forEach { record ->
